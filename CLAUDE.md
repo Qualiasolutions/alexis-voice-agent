@@ -224,23 +224,36 @@ GET /api/products/{id}?display=full&output_format=JSON
 
 ### 5. Stock Availability
 
-**Check stock for product:**
+**Check stock for product (use bracket notation for filter values):**
 ```http
-GET /api/stock_availables?filter[id_product]={product_id}&output_format=JSON
+GET /api/stock_availables?filter[id_product]=[{product_id}]&filter[id_product_attribute]=[0]&display=full&output_format=JSON
+```
+
+**Example:**
+```http
+GET /api/stock_availables?filter[id_product]=[39041]&filter[id_product_attribute]=[0]&display=full&output_format=JSON
 ```
 
 **Response:**
 ```json
 {
-  "stock_available": {
-    "id": 1,
-    "id_product": 10,
-    "id_product_attribute": 0,
-    "quantity": 50,
-    "out_of_stock": 1
-  }
+  "stock_availables": [
+    {
+      "id": 40580,
+      "id_product": 39041,
+      "id_product_attribute": 0,
+      "id_shop": 1,
+      "id_shop_group": 0,
+      "quantity": 5,
+      "depends_on_stock": "0",
+      "out_of_stock": 2,
+      "location": ""
+    }
+  ]
 }
 ```
+
+**Note:** The stock quantity is in the `quantity` key. The `out_of_stock` field indicates behavior when out of stock (0=deny orders, 1=allow orders, 2=use default).
 
 ### 6. Addresses
 
@@ -535,6 +548,7 @@ const name = product.name.find(n => n.id === languageId)?.value;
 2. Agent searches products by name
 3. Agent retrieves stock availability
 4. Agent provides price and availability info
+5. **Agent mentions delivery times are on the product page and offers to share the link**
 
 ### Scenario 3: Return Request
 1. Customer provides order number
@@ -547,3 +561,23 @@ const name = product.name.find(n => n.id === languageId)?.value;
 2. Agent retrieves order carrier info
 3. Agent gets tracking number
 4. Agent provides carrier tracking URL
+
+---
+
+## Important: Delivery Times
+
+**Delivery times are NOT available via the API.** They are displayed on each product page in PrestaShop.
+
+When a customer asks about delivery times, the agent should:
+1. Check product availability using the stock API
+2. Inform the customer that delivery times vary by product
+3. Direct them to the product page for specific delivery information
+4. Offer to send the product page link via SMS
+
+**Product Page URL Format:**
+```
+https://{store_url}/index.php?id_product={product_id}&controller=product
+```
+
+**Example response:**
+> "This product is currently in stock with 5 units available. For specific delivery times to your area, you can check the product page. Would you like me to send you the link?"

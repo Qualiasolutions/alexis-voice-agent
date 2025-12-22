@@ -40,14 +40,16 @@ export async function checkProductAvailability({ product_id, product_name }) {
           price: product.price,
           in_stock: stock?.inStock || false,
           quantity_available: stock?.quantity || 0,
-          available_for_order: product.available
+          available_for_order: product.available,
+          product_page_url: prestashop.getProductPageUrl(product.id)
         };
       })
     );
 
     return {
       success: true,
-      products: results
+      products: results,
+      note: 'Delivery times can be found on the product page. Please share the product page link with the customer.'
     };
   } catch (error) {
     console.error('checkProductAvailability error:', error);
@@ -80,8 +82,10 @@ export async function getProductInfo({ product_id }) {
         in_stock: stock?.inStock || false,
         quantity_available: stock?.quantity || 0,
         active: product.active,
-        available_for_order: product.available
-      }
+        available_for_order: product.available,
+        product_page_url: prestashop.getProductPageUrl(product_id)
+      },
+      note: 'For delivery times, please refer the customer to the product page.'
     };
   } catch (error) {
     console.error('getProductInfo error:', error);

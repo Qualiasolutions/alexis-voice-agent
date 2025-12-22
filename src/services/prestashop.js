@@ -181,13 +181,15 @@ export class PrestaShopService {
 
   /**
    * Check product stock availability
+   * Uses bracket notation for filter values: filter[id_product]=[productId]
    */
   async getProductStock(productId) {
     try {
       const response = await this.client.get('/stock_availables', {
         params: {
-          'filter[id_product]': productId,
-          'filter[id_product_attribute]': 0
+          'filter[id_product]': `[${productId}]`,
+          'filter[id_product_attribute]': '[0]',
+          display: 'full'
         }
       });
       const stocks = response.data.stock_availables;
@@ -195,13 +197,22 @@ export class PrestaShopService {
         return {
           productId,
           quantity: parseInt(stocks[0].quantity) || 0,
-          inStock: parseInt(stocks[0].quantity) > 0
+          inStock: parseInt(stocks[0].quantity) > 0,
+          outOfStock: parseInt(stocks[0].out_of_stock),
+          location: stocks[0].location || null
         };
       }
       return { productId, quantity: 0, inStock: false };
     } catch (error) {
       this.handleError(error, 'getProductStock');
     }
+  }
+
+  /**
+   * Get product page URL for delivery times info
+   */
+  getProductPageUrl(productId) {
+    return `${this.baseUrl}/index.php?id_product=${productId}&controller=product`;
   }
 
   // ==================== ADDRESSES ====================
