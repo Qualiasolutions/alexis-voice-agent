@@ -4,7 +4,24 @@
 
 Alexis is a VAPI voice AI agent that integrates with PrestaShop e-commerce platform. The agent handles customer service calls including order status, product inquiries, returns, and general support.
 
-## Architecture
+## Backend / Deployment
+
+**Claude Code should choose the best backend approach** based on requirements:
+
+| Option | Best For | Pros |
+|--------|----------|------|
+| **Vercel** (Edge/Serverless) | Fast deployment, low latency | Auto-scaling, easy deploys, edge functions |
+| **Next.js API Routes** | Full-stack with frontend | SSR, API routes, Vercel integration |
+| **Express.js** | Traditional server | Simple, flexible, any hosting |
+| **Cloudflare Workers** | Ultra-low latency | Edge computing, cheap |
+| **AWS Lambda** | Enterprise scale | Full AWS ecosystem |
+
+**Considerations:**
+- VAPI webhooks need a public URL (use ngrok for local dev)
+- PrestaShop API calls should be server-side (API key security)
+- Choose based on existing infrastructure and scaling needs
+
+## Current Structure
 
 ```
 alexis/
@@ -16,6 +33,8 @@ alexis/
 ├── config/             # Environment and configuration
 └── tests/              # Test files
 ```
+
+**Note:** The current Express.js setup can be migrated to any platform. The core logic in `services/` and `tools/` is framework-agnostic.
 
 ## PrestaShop Webservice API
 
@@ -478,23 +497,30 @@ WEBHOOK_SECRET=your_webhook_secret
 
 ---
 
-## Development Commands
+## Development
 
+**Local Development:**
 ```bash
-# Install dependencies
 npm install
-
-# Run development server
 npm run dev
+```
 
-# Run tests
-npm test
+**For Vercel deployment:**
+```bash
+npm i -g vercel
+vercel dev      # Local with Vercel runtime
+vercel deploy   # Deploy to Vercel
+```
 
-# Build for production
-npm run build
+**For Next.js migration:**
+- Move tool handlers to `app/api/vapi/tools/route.ts`
+- Services remain unchanged
 
-# Start production server
-npm start
+**Testing webhooks locally:**
+```bash
+# Use ngrok to expose local server
+ngrok http 3000
+# Use the ngrok URL in VAPI assistant config
 ```
 
 ---
