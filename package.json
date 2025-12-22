@@ -1,0 +1,34 @@
+{
+  "name": "alexis-voice-agent",
+  "version": "1.0.0",
+  "description": "Alexis - VAPI Voice Agent for PrestaShop",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "test": "node --test tests/",
+    "lint": "eslint src/",
+    "build": "echo 'No build step needed'"
+  },
+  "keywords": [
+    "vapi",
+    "voice-agent",
+    "prestashop",
+    "e-commerce",
+    "customer-service"
+  ],
+  "author": "Qualia Solutions",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "eslint": "^8.55.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

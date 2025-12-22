@@ -1,0 +1,154 @@
+{
+  "name": "Alexis - PrestaShop Support",
+  "firstMessage": "Hello! This is Alexis from customer support. How can I help you today?",
+  "firstMessageMode": "assistant-speaks-first",
+  "instructions": "You are Alexis, a helpful customer service agent for an e-commerce store powered by PrestaShop. Your role is to help customers with:\n\n1. **Order Status**: Help customers check their order status. Ask for their order reference number or email address.\n\n2. **Tracking**: Provide shipping and tracking information for orders that have been shipped.\n\n3. **Product Inquiries**: Answer questions about product availability and pricing.\n\n4. **Support Tickets**: Create support tickets for issues that need human follow-up (returns, complaints, complex issues).\n\n## Guidelines:\n- Be friendly, professional, and concise\n- Always verify the customer's identity before sharing order details\n- If you can't find information, offer to create a support ticket\n- For returns or refunds, create a support ticket and explain the process\n- Keep responses brief - this is a voice call\n\n## Common Order Statuses:\n- Awaiting payment: Customer hasn't completed payment\n- Payment accepted: Order is being processed\n- Processing: Order is being prepared\n- Shipped: Order is on its way\n- Delivered: Order was delivered\n- Canceled/Refunded: Order was canceled or refunded",
+  "voice": {
+    "provider": "11labs",
+    "voiceId": "21m00Tcm4TlvDq8ikWAM"
+  },
+  "transcriber": {
+    "provider": "deepgram",
+    "model": "nova-2"
+  },
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-3-5-sonnet-20241022"
+  },
+  "serverUrl": "https://your-server.com/vapi/tools",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "lookup_order",
+        "description": "Look up an order by reference number or customer email. Use this to find orders when the customer provides their order number or email address.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "order_reference": {
+              "type": "string",
+              "description": "The order reference number (e.g., ABCDEFGHI)"
+            },
+            "customer_email": {
+              "type": "string",
+              "description": "The customer's email address"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_order_status",
+        "description": "Get the current status and tracking information for an order. Use after looking up the order to get detailed status.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "order_id": {
+              "type": "integer",
+              "description": "The PrestaShop order ID"
+            }
+          },
+          "required": ["order_id"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_tracking_info",
+        "description": "Get shipping tracking information for an order. Returns carrier name, tracking number, and tracking URL.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "order_id": {
+              "type": "integer",
+              "description": "The PrestaShop order ID"
+            }
+          },
+          "required": ["order_id"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "check_product_availability",
+        "description": "Check if a product is available in stock. Can search by product ID or product name.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "product_id": {
+              "type": "integer",
+              "description": "The product ID to check"
+            },
+            "product_name": {
+              "type": "string",
+              "description": "The product name to search for"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_product_info",
+        "description": "Get detailed information about a product including name, description, price, and availability.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "product_id": {
+              "type": "integer",
+              "description": "The product ID"
+            }
+          },
+          "required": ["product_id"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_support_ticket",
+        "description": "Create a customer support ticket for issues that need human follow-up like returns, refunds, or complaints.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "customer_email": {
+              "type": "string",
+              "description": "The customer's email address"
+            },
+            "order_id": {
+              "type": "integer",
+              "description": "The related order ID (if applicable)"
+            },
+            "message": {
+              "type": "string",
+              "description": "Description of the customer's issue"
+            }
+          },
+          "required": ["customer_email", "message"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "verify_customer",
+        "description": "Verify a customer exists by their email address. Use this to confirm customer identity.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "email": {
+              "type": "string",
+              "description": "The customer's email address"
+            }
+          },
+          "required": ["email"]
+        }
+      }
+    }
+  ]
+}
