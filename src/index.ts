@@ -40,23 +40,36 @@ const ORDER_STATES: Record<number, string> = {
   21: 'awaiting SEPA payment'
 };
 
-// In-memory carrier cache (persists across requests in same isolate)
+// In-memory caches (persist across requests in same isolate)
 let carrierCache: Map<number, string> = new Map();
 let carrierCacheTime = 0;
 const CARRIER_CACHE_TTL = 3600000; // 1 hour
 
-// Helper: Base64 encode for Workers (optimized)
-function base64Encode(str: string): string {
-  const bytes = new TextEncoder().encode(str);
+// Product cache for frequently accessed products (5 min TTL, max 100 items)
+let productCache: Map<number, { name: string; price: string; time: number }> = new Map();
+const PRODUCT_CACHE_TTL = 300000; // 5 minutes
+const PRODUCT_CACHE_MAX = 100;
+
+// Cached auth header (computed once per isolate lifecycle)
+let cachedAuth: string | null = null;
+let cachedAuthKey: string | null = null;
+
+// Helper: Get cached auth header
+function getAuthHeader(apiKey: string): string {
+  if (cachedAuth && cachedAuthKey === apiKey) {
+    return cachedAuth;
+  }
+  const bytes = new TextEncoder().encode(`${apiKey}:`);
   const binString = Array.from(bytes, (x) => String.fromCodePoint(x)).join('');
-  return btoa(binString);
+  cachedAuth = `Basic ${btoa(binString)}`;
+  cachedAuthKey = apiKey;
+  return cachedAuth;
 }
 
-// Helper: PrestaShop API call with timeout and improved error handling
+// Helper: PrestaShop API call with timeout, caching, and improved error handling
 async function prestashopFetch(env: Env, endpoint: string, useB2B = false, timeoutMs = 5000): Promise<any> {
   const baseUrl = useB2B ? env.PRESTASHOP_B2B_URL : env.PRESTASHOP_URL;
   const url = `${baseUrl}${endpoint}${endpoint.includes('?') ? '&' : '?'}output_format=JSON`;
-  const auth = base64Encode(`${env.PRESTASHOP_API_KEY}:`);
 
   // Create abort controller for timeout
   const controller = new AbortController();
@@ -64,7 +77,10 @@ async function prestashopFetch(env: Env, endpoint: string, useB2B = false, timeo
 
   try {
     const response = await fetch(url, {
-      headers: { 'Authorization': `Basic ${auth}` },
+      headers: {
+        'Authorization': getAuthHeader(env.PRESTASHOP_API_KEY),
+        'Accept-Encoding': 'gzip, deflate' // Request compression
+      },
       signal: controller.signal
     });
 
@@ -200,47 +216,88 @@ async function getOrderStatus(env: Env, args: { reference?: string; email?: stri
   }
 }
 
-// Tool: Check Product Stock (optimized - parallel calls, minimal data)
+// Helper: Get cached product info or fetch
+async function getProductInfo(env: Env, productId: number): Promise<{ name: string; price: string } | null> {
+  const now = Date.now();
+  const cached = productCache.get(productId);
+
+  if (cached && (now - cached.time) < PRODUCT_CACHE_TTL) {
+    return { name: cached.name, price: cached.price };
+  }
+
+  try {
+    const product = await prestashopFetch(env, `/products/${productId}?display=[id,name,price]`);
+    const productInfo = product.products?.[0] || product.product;
+    if (!productInfo) return null;
+
+    const name = makeSpeechFriendly(extractProductName(productInfo.name));
+    const price = `€${parseFloat(productInfo.price || 0).toFixed(2)}`;
+
+    // Cache with LRU-style eviction
+    if (productCache.size >= PRODUCT_CACHE_MAX) {
+      const oldestKey = productCache.keys().next().value;
+      if (oldestKey !== undefined) productCache.delete(oldestKey);
+    }
+    productCache.set(productId, { name, price, time: now });
+
+    return { name, price };
+  } catch {
+    return null;
+  }
+}
+
+// Tool: Check Product Stock (optimized - parallel calls, caching)
 async function checkProductStock(env: Env, args: { product_id?: number; product_name?: string }) {
   try {
     let productId = args.product_id;
     let productName: string;
 
     if (args.product_name && !args.product_id) {
-      // Search returns id and name only
-      // PrestaShop filter: %value% for CONTAINS match (case-insensitive)
+      // Search by name - must be sequential (need ID first)
       const search = await prestashopFetch(env, `/products?filter[name]=%${encodeURIComponent(args.product_name)}%&display=[id,name]&limit=1`);
       if (!search.products?.length) {
         return { success: false, message: `No product found matching "${args.product_name}"` };
       }
       productId = search.products[0].id;
       productName = makeSpeechFriendly(extractProductName(search.products[0].name));
-    } else {
-      // Fetch only name field (NOT display=full - saves ~30KB)
-      const product = await prestashopFetch(env, `/products/${productId}?display=[id,name]`);
-      const productInfo = product.products?.[0] || product.product;
-      productName = makeSpeechFriendly(extractProductName(productInfo?.name));
+
+      // Fetch stock after we have the ID
+      const stock = await prestashopFetch(env, `/stock_availables?filter[id_product]=${productId}&filter[id_product_attribute]=0&display=[quantity]`, true);
+      if (!stock.stock_availables?.length) {
+        return { success: false, message: 'Unable to check stock for this product' };
+      }
+      const quantity = parseInt(stock.stock_availables[0].quantity, 10);
+
+      return {
+        success: true,
+        product_id: productId,
+        name: productName,
+        quantity,
+        in_stock: quantity > 0,
+        message: quantity > 0 ? `Yes, we have ${quantity} units in stock` : 'Sorry, this product is currently out of stock'
+      };
     }
 
-    // Fetch stock from B2B endpoint
-    // Note: filter[field]=value for exact match (not [value] which is interval/OR syntax)
-    const stock = await prestashopFetch(env, `/stock_availables?filter[id_product]=${productId}&filter[id_product_attribute]=0&display=[quantity]`, true);
+    // Have product ID - fetch product info and stock IN PARALLEL
+    const [productInfo, stock] = await Promise.all([
+      getProductInfo(env, productId!),
+      prestashopFetch(env, `/stock_availables?filter[id_product]=${productId}&filter[id_product_attribute]=0&display=[quantity]`, true)
+    ]);
 
     if (!stock.stock_availables?.length) {
       return { success: false, message: 'Unable to check stock for this product' };
     }
 
     const quantity = parseInt(stock.stock_availables[0].quantity, 10);
+    productName = productInfo?.name || 'Unknown product';
 
     return {
       success: true,
       product_id: productId,
       name: productName,
-      quantity: quantity,
+      quantity,
       in_stock: quantity > 0,
-      message: quantity > 0
-        ? `Yes, we have ${quantity} units in stock`
-        : 'Sorry, this product is currently out of stock'
+      message: quantity > 0 ? `Yes, we have ${quantity} units in stock` : 'Sorry, this product is currently out of stock'
     };
   } catch (error) {
     console.error('checkProductStock error:', error);
@@ -275,11 +332,12 @@ async function getCarrierName(env: Env, carrierId: number): Promise<string> {
   }
 }
 
-// Tool: Get Tracking Info (optimized - cached carrier lookup)
+// Tool: Get Tracking Info (optimized - parallel carrier cache refresh + order lookup)
 async function getTrackingInfo(env: Env, args: { reference?: string; order_id?: number }) {
   try {
     let orderId = args.order_id;
 
+    // If we need to look up by reference, do that first
     if (args.reference && !args.order_id) {
       const orders = await prestashopFetch(env, `/orders?filter[reference]=${args.reference}&display=[id]`);
       if (!orders.orders?.length) {
@@ -288,16 +346,32 @@ async function getTrackingInfo(env: Env, args: { reference?: string; order_id?: 
       orderId = orders.orders[0].id;
     }
 
-    const carriers = await prestashopFetch(env, `/order_carriers?filter[id_order]=${orderId}&display=[id_carrier,tracking_number]`);
+    // Pre-warm carrier cache in parallel with order_carriers fetch if cache is stale
+    const now = Date.now();
+    const needsCacheRefresh = (now - carrierCacheTime) >= CARRIER_CACHE_TTL;
 
-    if (!carriers.order_carriers?.length) {
+    const [carriersResult] = await Promise.all([
+      prestashopFetch(env, `/order_carriers?filter[id_order]=${orderId}&display=[id_carrier,tracking_number]`),
+      // Refresh carrier cache in background if stale (don't await result)
+      needsCacheRefresh ? prestashopFetch(env, `/carriers?display=[id,name]`).then(data => {
+        carrierCache = new Map();
+        carrierCacheTime = Date.now();
+        if (data.carriers) {
+          for (const c of data.carriers) {
+            carrierCache.set(parseInt(c.id, 10), c.name || 'Standard shipping');
+          }
+        }
+      }).catch(() => {}) : Promise.resolve()
+    ]);
+
+    if (!carriersResult.order_carriers?.length) {
       return { success: false, message: 'No shipping information available yet for this order' };
     }
 
-    const orderCarrier = carriers.order_carriers[0];
+    const orderCarrier = carriersResult.order_carriers[0];
     const trackingNumber = orderCarrier.tracking_number;
 
-    // Use cached carrier name lookup
+    // Use cached carrier name lookup (cache was refreshed in parallel if needed)
     const carrierName = orderCarrier.id_carrier
       ? await getCarrierName(env, parseInt(orderCarrier.id_carrier, 10))
       : 'Standard shipping';
@@ -421,25 +495,35 @@ async function createSupportTicket(env: Env, args: { order_id?: number; message:
   }
 }
 
-// Main handler
+// Pre-built responses for fast paths
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type'
+};
+
+const JSON_HEADERS = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*'
+};
+
+// Pre-stringified responses for common cases
+const OK_RESPONSE = JSON.stringify({ ok: true });
+const METHOD_NOT_ALLOWED = JSON.stringify({ error: 'Method not allowed' });
+const INTERNAL_ERROR = JSON.stringify({ error: 'Internal server error' });
+
+// Main handler with performance instrumentation
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    // CORS
+    const startTime = Date.now();
+
+    // CORS preflight - fastest path
     if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type'
-        }
-      });
+      return new Response(null, { headers: CORS_HEADERS });
     }
 
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-        status: 405,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return new Response(METHOD_NOT_ALLOWED, { status: 405, headers: JSON_HEADERS });
     }
 
     try {
@@ -448,15 +532,9 @@ export default {
       // VAPI sends many event types - only process tool-call events
       const toolCall = body.message?.toolCalls?.[0];
 
-      // If no tool call, acknowledge the event and return fast
+      // If no tool call, acknowledge the event and return fast (pre-stringified)
       if (!toolCall) {
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-          }
-        });
+        return new Response(OK_RESPONSE, { status: 200, headers: JSON_HEADERS });
       }
 
       const functionName = toolCall.function.name;
@@ -484,24 +562,25 @@ export default {
           result = { error: `Unknown function: ${functionName}` };
       }
 
-      return new Response(JSON.stringify({
+      // Log performance metrics
+      const duration = Date.now() - startTime;
+      if (duration > 500) {
+        console.warn(`Slow tool call: ${functionName} took ${duration}ms`);
+      }
+
+      // Build response with pre-stringified result
+      const responseBody = JSON.stringify({
         results: [{
           toolCallId: toolCall.id,
           result: JSON.stringify(result)
         }]
-      }), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        }
       });
+
+      return new Response(responseBody, { headers: JSON_HEADERS });
 
     } catch (error) {
       console.error('Webhook error:', error);
-      return new Response(JSON.stringify({ error: 'Internal server error' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      });
+      return new Response(INTERNAL_ERROR, { status: 500, headers: JSON_HEADERS });
     }
   }
 };
