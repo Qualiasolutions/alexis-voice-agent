@@ -1,0 +1,25 @@
+{
+  "name": "alexis-voice-agent",
+  "version": "1.0.0",
+  "description": "VAPI voice agent for armenius.cy PrestaShop customer support",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:vapi": "node scripts/deploy-vapi.js",
+    "test": "node scripts/test-webhook.js",
+    "secret": "wrangler secret put PRESTASHOP_API_KEY",
+    "debug": "node scripts/debug-vapi.js",
+    "debug:call": "node scripts/debug-vapi.js --call",
+    "debug:telnyx": "node scripts/debug-telnyx.js",
+    "debug:latency": "node scripts/test-latency.js"
+  },
+  "keywords": ["vapi", "voice-agent", "prestashop", "customer-support", "cloudflare-workers"],
+  "author": "Qualia Solutions",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241205.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.99.0"
+  }
+}

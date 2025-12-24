@@ -1,0 +1,9 @@
+name = "alexis-webhook"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[vars]
+PRESTASHOP_URL = "https://armenius.cy/api"
+PRESTASHOP_B2B_URL = "https://b2b.armenius.cy/api"
+
+# Set secret with: wrangler secret put PRESTASHOP_API_KEY

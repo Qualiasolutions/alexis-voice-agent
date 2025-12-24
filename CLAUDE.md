@@ -1,228 +1,178 @@
-# Alexis - PrestaShop API Reference
+# CLAUDE.md
 
-PrestaShop e-commerce API documentation for voice agent integration.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Store:** https://armenius.cy
+## Project Overview
 
----
+Alexis is a multilingual VAPI voice agent for armenius.cy PrestaShop e-commerce support. It handles customer inquiries about orders, product stock, tracking, and support tickets in Greek, Russian, and English.
 
-## Authentication
+## Architecture
 
-PrestaShop uses API key via HTTP Basic Auth:
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    VAPI Voice Platform                       │
+│  Gladia Solaria (STT) → Gemini 2.0 Flash → Cartesia (TTS)   │
+└────────────────────────┬────────────────────────────────────┘
+                         │ Tool calls
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Cloudflare Worker (src/index.ts)                │
+│  - Webhook handler for 5 VAPI tools                         │
+│  - 5s timeout on all API calls (AbortController)            │
+│  - Carrier name caching (1hr TTL, in-memory Map)            │
+│  - TTS-friendly text transformations                        │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+         ┌───────────────┴───────────────┐
+         ▼                               ▼
+┌─────────────────────────┐        ┌─────────────────────────┐
+│  armenius.cy/api        │        │  b2b.armenius.cy/api    │
+│  (Main PrestaShop)      │        │  (Stock queries only)   │
+└─────────────────────────┘        └─────────────────────────┘
+```
+
+**Deployment options:**
+- `src/index.ts` - Cloudflare Worker (primary, ~2ms cold start, uses `btoa()` for base64, has 5s timeout + carrier caching)
+- `api/webhook.js` - Vercel/Netlify (alternative, uses Node.js `Buffer.from()`, no caching)
+
+## Commands
 
 ```bash
-curl -u "API_KEY:" https://armenius.cy/api/
+# Local development (Cloudflare Worker)
+npm run dev                    # wrangler dev → localhost:8787
+
+# Deploy webhook to Cloudflare
+npm run deploy                 # wrangler deploy
+
+# Set PrestaShop API key as secret
+npm run secret                 # wrangler secret put PRESTASHOP_API_KEY
+
+# Deploy VAPI assistant and tools (saves .vapi-deployment.json)
+VAPI_TOKEN=xxx WEBHOOK_URL=https://alexis-webhook.workers.dev npm run deploy:vapi
+
+# Test webhook (default URL: localhost:3000, override with WEBHOOK_URL)
+WEBHOOK_URL=http://localhost:8787 npm run test
 ```
 
-**Enable Webservice:**
-1. **Advanced Parameters** > **Webservice**
-2. Enable webservice: **Yes**
-3. Add new webservice key
-4. Set permissions per resource
+## VAPI Tools
 
----
+The assistant exposes 5 tools to VAPI (defined in `vapi-config/tools.json`):
 
-## Required Permissions
+| Tool | Purpose |
+|------|---------|
+| `getOrderStatus` | Lookup by reference (9-char) or email |
+| `checkProductStock` | Query stock via B2B endpoint |
+| `getTrackingInfo` | Get carrier/tracking number |
+| `searchProducts` | Search products by name/ID |
+| `createSupportTicket` | Create PrestaShop message (XML POST) |
 
-| Resource | GET | POST | Purpose |
-|----------|-----|------|---------|
-| orders | ✓ | - | Order status |
-| order_states | ✓ | - | Status labels |
-| order_carriers | ✓ | - | Tracking info |
-| customers | ✓ | - | Customer lookup |
-| addresses | ✓ | - | Shipping info |
-| products | ✓ | - | Product info |
-| stock_availables | ✓ | - | Inventory |
-| carriers | ✓ | - | Shipping carriers |
-| messages | ✓ | ✓ | Support tickets |
+## PrestaShop API Notes
 
----
+- Stock queries use B2B endpoint (`PRESTASHOP_B2B_URL`) for reliability
+- Order states map from numeric IDs (see `ORDER_STATES` in index.ts:21-41)
+- Product names are multilingual arrays - extract `id=1` for English
+- Support tickets require XML POST with CDATA wrapping (not JSON)
+- Filter format: `filter[field]=[value]` or `filter[field]=%value%` for LIKE queries
+- Use `display=[field1,field2]` to minimize response size (avoid `display=full`)
 
-## API Endpoints
+## Environment Variables
 
-Base: `https://armenius.cy/api/{resource}?output_format=JSON`
+| Variable | Where Set | Purpose |
+|----------|-----------|---------|
+| `PRESTASHOP_API_KEY` | Cloudflare secret | API authentication (Basic auth, key as username) |
+| `PRESTASHOP_URL` | wrangler.toml | Main shop API (armenius.cy) |
+| `PRESTASHOP_B2B_URL` | wrangler.toml | B2B API for stock queries |
+| `VAPI_TOKEN` | Local env | For deploy:vapi script only |
+| `WEBHOOK_URL` | Local env | For deploy:vapi and test scripts |
 
----
+## Key Implementation Details
 
-### Orders
+**File locations:**
+- Tool handler functions: `src/index.ts:142-401` (getOrderStatus, checkProductStock, getTrackingInfo, searchProducts, createSupportTicket)
+- Order states mapping: `src/index.ts:21-41`
+- TTS helpers: `src/index.ts:96-139`
 
-**Get order by ID:**
-```
-GET /api/orders/{id}?output_format=JSON
-```
+**TTS Optimization (`makeSpeechFriendly`):** Transforms product names for natural speech:
+- "16GB" → "16 gigabytes"
+- "DDR4" → "D D R 4"
+- "i5-1145G7" → "i5 1145 G 7"
 
-**Filter by reference:**
-```
-GET /api/orders?filter[reference]={REFERENCE}&output_format=JSON
-```
+**Listing Optimization (`shortenForListing`):** Truncates product names for voice listings - keeps brand + model, drops specs.
 
-**Filter by customer:**
-```
-GET /api/orders?filter[id_customer]={customer_id}&output_format=JSON
-```
+**Carrier Caching:** In-memory Map with 1hr TTL persists across requests in the same Worker isolate. Refreshes all carriers in a single call.
 
-**Response:**
+**Response Format:** VAPI expects tool results in this structure:
 ```json
 {
-  "order": {
-    "id": 123,
-    "reference": "ABCDEFGHI",
-    "id_customer": 45,
-    "id_address_delivery": 67,
-    "current_state": 4,
-    "payment": "Credit Card",
-    "total_paid": "150.00",
-    "date_add": "2024-01-15 10:30:00"
-  }
-}
-```
-
----
-
-### Order States
-
-**Get all states:**
-```
-GET /api/order_states?output_format=JSON
-```
-
-| ID | Status |
-|----|--------|
-| 1 | Awaiting check payment |
-| 2 | Payment accepted |
-| 3 | Processing in progress |
-| 4 | Shipped |
-| 5 | Delivered |
-| 6 | Canceled |
-| 7 | Refunded |
-
----
-
-### Customers
-
-**Find by email:**
-```
-GET /api/customers?filter[email]={email}&output_format=JSON
-```
-
-**Get by ID:**
-```
-GET /api/customers/{id}?output_format=JSON
-```
-
----
-
-### Products
-
-**Get product:**
-```
-GET /api/products/{id}?display=full&output_format=JSON
-```
-
-**Search by name:**
-```
-GET /api/products?filter[name]=%{search}%&output_format=JSON
-```
-
----
-
-### Stock Availability
-
-**Check stock (use bracket notation):**
-```
-GET /api/stock_availables?filter[id_product]=[{product_id}]&filter[id_product_attribute]=[0]&display=full&output_format=JSON
-```
-
-**Example:**
-```
-GET /api/stock_availables?filter[id_product]=[39041]&filter[id_product_attribute]=[0]&display=full&output_format=JSON
-```
-
-**Response:**
-```json
-{
-  "stock_availables": [{
-    "id": 40580,
-    "id_product": 39041,
-    "id_product_attribute": 0,
-    "quantity": 5,
-    "out_of_stock": 2
+  "results": [{
+    "toolCallId": "call-id",
+    "result": "{\"success\": true, ...}"
   }]
 }
 ```
 
-**Stock is in the `quantity` key.**
+Non-tool-call webhook events should return `{ "ok": true }` immediately.
 
----
+**VAPI deployment state:** `npm run deploy:vapi` saves assistant/tool IDs to `.vapi-deployment.json` for subsequent updates.
 
-### Tracking
+## Debugging & Diagnostics
 
-**Get carrier for order:**
-```
-GET /api/order_carriers?filter[id_order]={order_id}&output_format=JSON
-```
+```bash
+# Full VAPI diagnostics (assistants, phones, calls, recommendations)
+VAPI_TOKEN=xxx npm run debug
 
-**Get carrier details:**
-```
-GET /api/carriers/{carrier_id}?output_format=JSON
-```
+# Analyze a specific call for latency/errors
+VAPI_TOKEN=xxx npm run debug:call <call-id>
 
----
+# Telnyx phone number diagnostics
+VAPI_TOKEN=xxx npm run debug:telnyx
+VAPI_TOKEN=xxx TELNYX_API_KEY=xxx npm run debug:telnyx  # Full mode
 
-### Addresses
-
-**Get address:**
-```
-GET /api/addresses/{id}?output_format=JSON
+# Test webhook latency (run wrangler dev first)
+WEBHOOK_URL=http://localhost:8787 npm run debug:latency
 ```
 
----
+### Voice Stack Configuration
 
-## Delivery Times
-
-**Delivery times are NOT in the API.**
-
-Direct customers to the product page:
-```
-https://armenius.cy/index.php?id_product={product_id}&controller=product
-```
-
-Always tell customers: *"For delivery times, please check the product page. I can send you the link."*
-
----
-
-## Filter Syntax
-
-| Type | Syntax | Example |
-|------|--------|---------|
-| Equals | `filter[field]=value` | `filter[id]=5` |
-| Contains | `filter[field]=%value%` | `filter[name]=%shirt%` |
-| Bracket | `filter[field]=[value]` | `filter[id_product]=[39041]` |
-| Range | `filter[field]=[min,max]` | `filter[price]=[10,50]` |
-
----
-
-## Multilanguage Fields
-
-Product names/descriptions are arrays:
 ```json
 {
-  "name": [
-    {"id": 1, "value": "English Name"},
-    {"id": 2, "value": "Greek Name"}
-  ]
+  "transcriber": {
+    "provider": "gladia",
+    "model": "solaria-1",
+    "languageBehaviour": "automatic multiple languages"
+  },
+  "model": {
+    "provider": "google",
+    "model": "gemini-2.0-flash",
+    "temperature": 0.7,
+    "maxTokens": 250
+  },
+  "voice": {
+    "provider": "cartesia",
+    "voiceId": "b45eba5b-2215-4da7-9c7c-121c95ed7b81",
+    "model": "sonic-multilingual"
+  }
 }
 ```
 
-Use language ID 1 for English.
+**Why this stack:**
+- **Gladia Solaria**: Only STT with Greek + Russian + English code-switching (Deepgram `multi` mode lacks Greek)
+- **Gemini 2.0 Flash**: Fast (~150ms), multilingual, good for e-commerce
+- **Cartesia**: Greek voice `b45eba5b-...` with `sonic-multilingual` for all 3 languages
 
----
+### Latency Budget (target < 700ms total)
+| Component | Target | Notes |
+|-----------|--------|-------|
+| Transcription (Gladia Solaria) | ~270ms | Best for Greek multilingual |
+| Webhook (PrestaShop API) | < 200ms | Cached carriers help |
+| LLM (Gemini 2.0 Flash) | ~150ms | Short prompts faster |
+| TTS (Cartesia sonic-multilingual) | ~90ms | Streaming helps |
+| Network overhead | ~50-100ms | Varies by region |
+| **Total** | ~500-550ms | Within budget |
 
-## Error Codes
-
-| Code | Meaning |
-|------|---------|
-| 1 | Missing API key |
-| 2 | Invalid API key |
-| 14 | Resource not found |
-| 67 | Required field missing |
+### Common Issues
+- **High cold start**: Normal for serverless, ~50-200ms on Cloudflare
+- **Slow PrestaShop**: Use `display=[fields]` not `display=full`
+- **Telnyx no audio**: Re-import phone number in VAPI dashboard, check SIP in Telnyx portal
+- **No tools attached**: Run `npm run deploy:vapi` to attach tools to assistant
+- **Wrong language detected**: Gladia handles Greek/Russian/English automatically
