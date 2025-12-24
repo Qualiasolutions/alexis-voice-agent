@@ -31,9 +31,10 @@ Alexis is a multilingual VAPI voice agent for armenius.cy PrestaShop e-commerce 
 └─────────────────────────┘        └─────────────────────────┘
 ```
 
-**Deployment options:**
-- `src/index.ts` - Cloudflare Worker (primary, ~2ms cold start, uses `btoa()` for base64, has 5s timeout + carrier caching)
-- `api/webhook.js` - Vercel/Netlify (alternative, uses Node.js `Buffer.from()`, no caching)
+**Deployment:** Cloudflare Workers (`src/index.ts`)
+- ~2ms cold start, uses `btoa()` for base64
+- 5s timeout on all API calls (AbortController)
+- In-memory carrier caching (1hr TTL)
 
 ## Commands
 
@@ -72,7 +73,10 @@ The assistant exposes 5 tools to VAPI (defined in `vapi-config/tools.json`):
 - Order states map from numeric IDs (see `ORDER_STATES` in index.ts:21-41)
 - Product names are multilingual arrays - extract `id=1` for English
 - Support tickets require XML POST with CDATA wrapping (not JSON)
-- Filter format: `filter[field]=[value]` or `filter[field]=%value%` for LIKE queries
+- **Filter syntax** (per [PrestaShop docs](https://devdocs.prestashop-project.org/9/webservice/cheat-sheet/)):
+  - Exact match: `filter[field]=value` (NO brackets around value)
+  - LIKE/Contains: `filter[field]=%value%`
+  - Interval/OR: `filter[field]=[1|5]` or `filter[field]=[1,10]`
 - Use `display=[field1,field2]` to minimize response size (avoid `display=full`)
 
 ## Environment Variables
@@ -88,9 +92,9 @@ The assistant exposes 5 tools to VAPI (defined in `vapi-config/tools.json`):
 ## Key Implementation Details
 
 **File locations:**
-- Tool handler functions: `src/index.ts:142-401` (getOrderStatus, checkProductStock, getTrackingInfo, searchProducts, createSupportTicket)
+- Tool handlers: `src/index.ts:144-419` (getOrderStatus, checkProductStock, getTrackingInfo, searchProducts, createSupportTicket)
 - Order states mapping: `src/index.ts:21-41`
-- TTS helpers: `src/index.ts:96-139`
+- TTS helpers: `src/index.ts:96-142` (makeSpeechFriendly, shortenForListing)
 
 **TTS Optimization (`makeSpeechFriendly`):** Transforms product names for natural speech:
 - "16GB" → "16 gigabytes"
