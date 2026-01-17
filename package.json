@@ -8,18 +8,28 @@
     "deploy": "wrangler deploy",
     "deploy:vapi": "node scripts/deploy-vapi.js",
     "test": "node scripts/test-webhook.js",
+    "test:unit": "vitest run",
+    "test:watch": "vitest",
     "secret": "wrangler secret put PRESTASHOP_API_KEY",
     "debug": "node scripts/debug-vapi.js",
     "debug:call": "node scripts/debug-vapi.js --call",
     "debug:telnyx": "node scripts/debug-telnyx.js",
     "debug:latency": "node scripts/test-latency.js"
   },
-  "keywords": ["vapi", "voice-agent", "prestashop", "customer-support", "cloudflare-workers"],
+  "keywords": [
+    "vapi",
+    "voice-agent",
+    "prestashop",
+    "customer-support",
+    "cloudflare-workers"
+  ],
   "author": "Qualia Solutions",
   "license": "MIT",
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.4",
     "@cloudflare/workers-types": "^4.20241205.0",
     "typescript": "^5.3.3",
+    "vitest": "^4.0.17",
     "wrangler": "^3.99.0"
   }
 }

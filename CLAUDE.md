@@ -11,7 +11,7 @@ Alexis is a multilingual VAPI voice agent for armenius.cy PrestaShop e-commerce 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    VAPI Voice Platform                       │
-│  Gladia Solaria (STT) → Gemini 2.0 Flash → Cartesia (TTS)   │
+│  Gladia Solaria (STT) → GPT-4o (LLM) → 11labs (TTS)         │
 └────────────────────────┬────────────────────────────────────┘
                          │ Tool calls
                          ▼
@@ -23,12 +23,11 @@ Alexis is a multilingual VAPI voice agent for armenius.cy PrestaShop e-commerce 
 │  - TTS-friendly text transformations                        │
 └────────────────────────┬────────────────────────────────────┘
                          │
-         ┌───────────────┴───────────────┐
-         ▼                               ▼
-┌─────────────────────────┐        ┌─────────────────────────┐
-│  armenius.cy/api        │        │  b2b.armenius.cy/api    │
-│  (Main PrestaShop)      │        │  (Stock queries only)   │
-└─────────────────────────┘        └─────────────────────────┘
+                         ▼
+              ┌─────────────────────────┐
+              │  armenius.cy/api        │
+              │  (All PrestaShop API)   │
+              └─────────────────────────┘
 ```
 
 **Deployment:** Cloudflare Workers (`src/index.ts`)
@@ -51,8 +50,11 @@ npm run secret                 # wrangler secret put PRESTASHOP_API_KEY
 # Deploy VAPI assistant and tools (saves .vapi-deployment.json)
 VAPI_TOKEN=xxx WEBHOOK_URL=https://alexis-webhook.workers.dev npm run deploy:vapi
 
-# Test webhook (default URL: localhost:3000, override with WEBHOOK_URL)
-WEBHOOK_URL=http://localhost:8787 npm run test
+# Test webhook (requires VAPI_WEBHOOK_SECRET for signed requests)
+VAPI_WEBHOOK_SECRET=xxx npm run test
+
+# Run unit tests
+npm run test:unit
 ```
 
 ## VAPI Tools
@@ -62,20 +64,21 @@ The assistant exposes 5 tools to VAPI (defined in `vapi-config/tools.json`):
 | Tool | Purpose |
 |------|---------|
 | `getOrderStatus` | Lookup by reference (9-char) or email |
-| `checkProductStock` | Query stock via B2B endpoint |
+| `checkProductStock` | Query stock via main shop |
 | `getTrackingInfo` | Get carrier/tracking number |
 | `searchProducts` | Search products by name/ID |
 | `createSupportTicket` | Create PrestaShop message (XML POST) |
 
 ## PrestaShop API Notes
 
-- Stock queries use B2B endpoint (`PRESTASHOP_B2B_URL`) for reliability
+- All queries use main shop endpoint (`PRESTASHOP_URL`)
 - Order states map from numeric IDs (see `ORDER_STATES` in index.ts:21-41)
 - Product names are multilingual arrays - extract `id=1` for English
 - Support tickets require XML POST with CDATA wrapping (not JSON)
+- **Product search**: Use `/search?language=1&query=term` endpoint (NOT filter queries on name field - multilingual fields don't support LIKE filters)
+- **Stock queries**: Use `filter[id_product]=[ID]&filter[id_product_attribute]=[0]` with bracket syntax
 - **Filter syntax** (per [PrestaShop docs](https://devdocs.prestashop-project.org/9/webservice/cheat-sheet/)):
-  - Exact match: `filter[field]=value` (NO brackets around value)
-  - LIKE/Contains: `filter[field]=%value%`
+  - Exact match: `filter[field]=value` or `filter[field]=[value]` (bracket syntax for some endpoints)
   - Interval/OR: `filter[field]=[1|5]` or `filter[field]=[1,10]`
 - Use `display=[field1,field2]` to minimize response size (avoid `display=full`)
 
@@ -85,9 +88,15 @@ The assistant exposes 5 tools to VAPI (defined in `vapi-config/tools.json`):
 |----------|-----------|---------|
 | `PRESTASHOP_API_KEY` | Cloudflare secret | API authentication (Basic auth, key as username) |
 | `PRESTASHOP_URL` | wrangler.toml | Main shop API (armenius.cy) |
-| `PRESTASHOP_B2B_URL` | wrangler.toml | B2B API for stock queries |
+| `VAPI_WEBHOOK_SECRET` | Cloudflare secret | **Required** - HMAC-SHA256 signature verification |
 | `VAPI_TOKEN` | Local env | For deploy:vapi script only |
 | `WEBHOOK_URL` | Local env | For deploy:vapi and test scripts |
+
+**Setting secrets:**
+```bash
+npx wrangler secret put PRESTASHOP_API_KEY    # PrestaShop API key
+npx wrangler secret put VAPI_WEBHOOK_SECRET   # From VAPI dashboard → Server URL secret
+```
 
 ## Key Implementation Details
 
@@ -143,36 +152,38 @@ WEBHOOK_URL=http://localhost:8787 npm run debug:latency
   "transcriber": {
     "provider": "gladia",
     "model": "solaria-1",
-    "languageBehaviour": "automatic multiple languages"
+    "languageBehaviour": "automatic multiple languages",
+    "languages": ["el", "en", "ru"],
+    "confidenceThreshold": 0.2
   },
   "model": {
-    "provider": "google",
-    "model": "gemini-2.0-flash",
+    "provider": "openai",
+    "model": "chatgpt-4o-latest",
     "temperature": 0.7,
     "maxTokens": 250
   },
   "voice": {
-    "provider": "cartesia",
-    "voiceId": "b45eba5b-2215-4da7-9c7c-121c95ed7b81",
-    "model": "sonic-multilingual"
+    "provider": "11labs",
+    "voiceId": "pNInz6obpgDQGcFmaJgB",
+    "model": "eleven_turbo_v2_5"
   }
 }
 ```
 
 **Why this stack:**
 - **Gladia Solaria**: Only STT with Greek + Russian + English code-switching (Deepgram `multi` mode lacks Greek)
-- **Gemini 2.0 Flash**: Fast (~150ms), multilingual, good for e-commerce
-- **Cartesia**: Greek voice `b45eba5b-...` with `sonic-multilingual` for all 3 languages
+- **GPT-4o**: Fast, multilingual, excellent for e-commerce conversations
+- **11labs turbo_v2_5**: Fast male voice (Adam), supports multilingual output
 
 ### Latency Budget (target < 700ms total)
 | Component | Target | Notes |
 |-----------|--------|-------|
 | Transcription (Gladia Solaria) | ~270ms | Best for Greek multilingual |
 | Webhook (PrestaShop API) | < 200ms | Cached carriers help |
-| LLM (Gemini 2.0 Flash) | ~150ms | Short prompts faster |
-| TTS (Cartesia sonic-multilingual) | ~90ms | Streaming helps |
+| LLM (GPT-4o) | ~200ms | Short prompts faster |
+| TTS (11labs turbo) | ~100ms | Streaming helps |
 | Network overhead | ~50-100ms | Varies by region |
-| **Total** | ~500-550ms | Within budget |
+| **Total** | ~550-650ms | Within budget |
 
 ### Common Issues
 - **High cold start**: Normal for serverless, ~50-200ms on Cloudflare

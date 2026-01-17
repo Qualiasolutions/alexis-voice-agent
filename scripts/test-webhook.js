@@ -1,27 +1,49 @@
 #!/usr/bin/env node
 /**
  * Test webhook locally
- * Usage: PRESTASHOP_API_KEY=xxx node scripts/test-webhook.js
+ * Usage: VAPI_WEBHOOK_SECRET=xxx node scripts/test-webhook.js
+ *
+ * IMPORTANT: VAPI_WEBHOOK_SECRET is required for signed requests
  */
+const crypto = require('crypto');
 
-// Mock VAPI request format
+// Mock VAPI request format (matches actual VAPI tool-calls webhook format)
+// VAPI nests function name and arguments under toolCallList[].function
 const mockVapiRequest = (functionName, args) => ({
   message: {
-    toolCalls: [{
+    type: 'tool-calls',
+    toolCallList: [{
       id: 'test-call-123',
+      type: 'function',
       function: {
         name: functionName,
-        arguments: JSON.stringify(args)
+        arguments: args
       }
     }]
   }
 });
 
-async function testWebhook() {
-  const baseUrl = process.env.WEBHOOK_URL || 'http://localhost:3000';
+// Generate VAPI-compatible HMAC-SHA256 signature
+function signRequest(body, secret) {
+  const hmac = crypto.createHmac('sha256', secret);
+  hmac.update(body);
+  return hmac.digest('hex');
+}
 
-  console.log('🧪 Testing Alexis Webhook\n');
-  console.log(`URL: ${baseUrl}/api/webhook\n`);
+async function testWebhook() {
+  // Default to wrangler dev port (8787), not 3000
+  const baseUrl = process.env.WEBHOOK_URL || 'http://localhost:8787';
+  const secret = process.env.VAPI_WEBHOOK_SECRET;
+
+  if (!secret) {
+    console.error('ERROR: VAPI_WEBHOOK_SECRET environment variable is required');
+    console.error('Usage: VAPI_WEBHOOK_SECRET=xxx npm run test');
+    process.exit(1);
+  }
+
+  console.log('Testing Alexis Webhook\n');
+  // Cloudflare Worker handles requests at root path, not /api/webhook
+  console.log(`URL: ${baseUrl}\n`);
 
   const tests = [
     {
@@ -42,26 +64,33 @@ async function testWebhook() {
   ];
 
   for (const test of tests) {
-    console.log(`\n📋 Test: ${test.name}`);
+    console.log(`\nTest: ${test.name}`);
     console.log(`   Function: ${test.fn}`);
     console.log(`   Args: ${JSON.stringify(test.args)}`);
 
     try {
-      const response = await fetch(`${baseUrl}/api/webhook`, {
+      const body = JSON.stringify(mockVapiRequest(test.fn, test.args));
+      const signature = signRequest(body, secret);
+
+      // Cloudflare Worker handles at root path (not /api/webhook)
+      const response = await fetch(baseUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(mockVapiRequest(test.fn, test.args))
+        headers: {
+          'Content-Type': 'application/json',
+          'X-VAPI-Signature': signature
+        },
+        body
       });
 
       const data = await response.json();
       console.log(`   Status: ${response.status}`);
       console.log(`   Result: ${JSON.stringify(data, null, 2)}`);
     } catch (error) {
-      console.log(`   ❌ Error: ${error.message}`);
+      console.log(`   Error: ${error.message}`);
     }
   }
 
-  console.log('\n✅ Tests complete\n');
+  console.log('\nTests complete\n');
 }
 
 testWebhook();
