@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alexis - Armenius Support</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%230d9488'/></svg>">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f0f0f;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+    .container {
+      text-align: center;
+      max-width: 360px;
+    }
+    .logo {
+      width: 64px;
+      height: 64px;
+      background: #0d9488;
+      border-radius: 50%;
+      margin: 0 auto 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .logo svg {
+      width: 28px;
+      height: 28px;
+      fill: white;
+    }
+    h1 {
+      color: #fff;
+      font-size: 24px;
+      font-weight: 500;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+    .subtitle {
+      color: #6b7280;
+      font-size: 14px;
+      margin-bottom: 48px;
+    }
+    .call-btn {
+      background: #0d9488;
+      color: white;
+      border: none;
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .call-btn:hover {
+      background: #0f766e;
+      transform: scale(1.05);
+    }
+    .call-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .call-btn.active {
+      background: #dc2626;
+      animation: pulse 2s infinite;
+    }
+    .call-btn svg {
+      width: 32px;
+      height: 32px;
+      fill: white;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4); }
+      50% { box-shadow: 0 0 0 20px rgba(220, 38, 38, 0); }
+    }
+    .status {
+      color: #6b7280;
+      font-size: 13px;
+      margin-top: 24px;
+      min-height: 20px;
+    }
+    .status.connected {
+      color: #0d9488;
+    }
+    .footer {
+      position: fixed;
+      bottom: 24px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      color: #374151;
+      font-size: 12px;
+    }
+    .footer a {
+      color: #0d9488;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+      </svg>
+    </div>
+    <h1>Alexis</h1>
+    <p class="subtitle">Armenius Customer Support</p>
+
+    <button class="call-btn" id="callBtn">
+      <svg id="phoneIcon" viewBox="0 0 24 24">
+        <path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 00-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"/>
+      </svg>
+      <svg id="endIcon" viewBox="0 0 24 24" style="display:none">
+        <path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 01-.29-.7c0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.1-.7-.28-.79-.73-1.68-1.36-2.66-1.85a.996.996 0 01-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/>
+      </svg>
+    </button>
+
+    <p class="status" id="status"></p>
+  </div>
+
+  <p class="footer">Powered by <a href="https://qualiasolutions.cy" target="_blank">Qualia Solutions</a></p>
+
+  <script>
+    var vapiInstance = null;
+    const assistant = "3cab1a64-6ef3-4121-b88e-eed5d7451ccb";
+    const apiKey = "58d3e7c2-5eb3-47dd-a304-5b6a55447ecc";
+    let isCallActive = false;
+
+    (function (d, t) {
+      var g = document.createElement(t),
+        s = d.getElementsByTagName(t)[0];
+      g.src = "https://cdn.jsdelivr.net/gh/VapiAI/html-script-tag@latest/dist/assets/index.js";
+      g.defer = true;
+      g.async = true;
+      s.parentNode.insertBefore(g, s);
+      g.onload = function () {
+        vapiInstance = window.vapiSDK.run({
+          apiKey: apiKey,
+          assistant: assistant,
+          config: {
+            hide: true,
+            position: "bottom-right"
+          }
+        });
+
+        vapiInstance.on('call-start', () => {
+          isCallActive = true;
+          updateUI('connected');
+        });
+
+        vapiInstance.on('call-end', () => {
+          isCallActive = false;
+          updateUI('ended');
+        });
+
+        vapiInstance.on('speech-start', () => {
+          updateUI('speaking');
+        });
+
+        vapiInstance.on('speech-end', () => {
+          if (isCallActive) updateUI('listening');
+        });
+
+        vapiInstance.on('error', (e) => {
+          console.error('Vapi error:', e);
+          updateUI('error');
+        });
+      };
+    })(document, "script");
+
+    document.getElementById('callBtn').addEventListener('click', function() {
+      if (!vapiInstance) {
+        updateUI('loading');
+        return;
+      }
+
+      if (isCallActive) {
+        vapiInstance.stop();
+      } else {
+        updateUI('connecting');
+        vapiInstance.start(assistant);
+      }
+    });
+
+    function updateUI(state) {
+      const btn = document.getElementById('callBtn');
+      const phoneIcon = document.getElementById('phoneIcon');
+      const endIcon = document.getElementById('endIcon');
+      const status = document.getElementById('status');
+
+      switch(state) {
+        case 'loading':
+          status.textContent = 'Loading...';
+          status.className = 'status';
+          break;
+        case 'connecting':
+          btn.disabled = true;
+          status.textContent = 'Connecting...';
+          status.className = 'status';
+          break;
+        case 'connected':
+          btn.disabled = false;
+          btn.classList.add('active');
+          phoneIcon.style.display = 'none';
+          endIcon.style.display = 'block';
+          status.textContent = 'Connected';
+          status.className = 'status connected';
+          break;
+        case 'speaking':
+          status.textContent = 'Alexis is speaking...';
+          break;
+        case 'listening':
+          status.textContent = 'Listening...';
+          break;
+        case 'ended':
+          btn.disabled = false;
+          btn.classList.remove('active');
+          phoneIcon.style.display = 'block';
+          endIcon.style.display = 'none';
+          status.textContent = '';
+          status.className = 'status';
+          break;
+        case 'error':
+          btn.disabled = false;
+          btn.classList.remove('active');
+          phoneIcon.style.display = 'block';
+          endIcon.style.display = 'none';
+          status.textContent = 'Error - try again';
+          status.className = 'status';
+          break;
+      }
+    }
+  </script>
+</body>
+</html>

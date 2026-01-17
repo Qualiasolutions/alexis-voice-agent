@@ -35,15 +35,9 @@ async function testWebhook() {
   const baseUrl = process.env.WEBHOOK_URL || 'http://localhost:8787';
   const secret = process.env.VAPI_WEBHOOK_SECRET;
 
-  if (!secret) {
-    console.error('ERROR: VAPI_WEBHOOK_SECRET environment variable is required');
-    console.error('Usage: VAPI_WEBHOOK_SECRET=xxx npm run test');
-    process.exit(1);
-  }
-
   console.log('Testing Alexis Webhook\n');
-  // Cloudflare Worker handles requests at root path, not /api/webhook
-  console.log(`URL: ${baseUrl}\n`);
+  console.log(`URL: ${baseUrl}`);
+  console.log(`Signed requests: ${secret ? 'Yes' : 'No (set VAPI_WEBHOOK_SECRET to enable)'}\n`);
 
   const tests = [
     {
@@ -70,15 +64,17 @@ async function testWebhook() {
 
     try {
       const body = JSON.stringify(mockVapiRequest(test.fn, test.args));
-      const signature = signRequest(body, secret);
+      const headers = { 'Content-Type': 'application/json' };
+
+      // Add signature if secret is provided
+      if (secret) {
+        headers['X-VAPI-Signature'] = signRequest(body, secret);
+      }
 
       // Cloudflare Worker handles at root path (not /api/webhook)
       const response = await fetch(baseUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-VAPI-Signature': signature
-        },
+        headers,
         body
       });
 

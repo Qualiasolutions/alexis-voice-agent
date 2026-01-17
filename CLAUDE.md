@@ -88,7 +88,7 @@ The assistant exposes 5 tools to VAPI (defined in `vapi-config/tools.json`):
 |----------|-----------|---------|
 | `PRESTASHOP_API_KEY` | Cloudflare secret | API authentication (Basic auth, key as username) |
 | `PRESTASHOP_URL` | wrangler.toml | Main shop API (armenius.cy) |
-| `VAPI_WEBHOOK_SECRET` | Cloudflare secret | **Required** - HMAC-SHA256 signature verification |
+| `VAPI_WEBHOOK_SECRET` | Cloudflare secret | Optional - HMAC-SHA256 signature verification |
 | `VAPI_TOKEN` | Local env | For deploy:vapi script only |
 | `WEBHOOK_URL` | Local env | For deploy:vapi and test scripts |
 

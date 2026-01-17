@@ -14,7 +14,7 @@
 export interface Env {
   PRESTASHOP_API_KEY: string;
   PRESTASHOP_URL: string;
-  VAPI_WEBHOOK_SECRET: string; // Required for webhook authentication
+  VAPI_WEBHOOK_SECRET?: string; // Optional: for webhook signature verification
 }
 
 // Voice optimization constants
@@ -729,15 +729,13 @@ export default {
       // Read body for both auth verification and processing
       const bodyText = await request.text();
 
-      // Webhook authentication (mandatory in production)
-      if (!env.VAPI_WEBHOOK_SECRET) {
-        console.error('VAPI_WEBHOOK_SECRET not configured');
-        return new Response(INTERNAL_ERROR, { status: 500, headers: JSON_HEADERS });
-      }
-      const isValid = await verifyWebhookSignature(request, bodyText, env.VAPI_WEBHOOK_SECRET);
-      if (!isValid) {
-        console.warn('Webhook signature verification failed');
-        return new Response(UNAUTHORIZED, { status: 401, headers: JSON_HEADERS });
+      // Webhook authentication (optional - enable by setting VAPI_WEBHOOK_SECRET)
+      if (env.VAPI_WEBHOOK_SECRET) {
+        const isValid = await verifyWebhookSignature(request, bodyText, env.VAPI_WEBHOOK_SECRET);
+        if (!isValid) {
+          console.warn('Webhook signature verification failed');
+          return new Response(UNAUTHORIZED, { status: 401, headers: JSON_HEADERS });
+        }
       }
 
       const body = JSON.parse(bodyText);
