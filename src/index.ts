@@ -97,6 +97,52 @@ let productCache: Map<number, { name: string; price: string; time: number }> = n
 const PRODUCT_CACHE_TTL = 300000; // 5 minutes
 const PRODUCT_CACHE_MAX = 100;
 
+// Rate limiting (per-isolate, sliding window)
+const RATE_LIMIT_REQUESTS = 100;  // Max requests per window
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute window
+const rateLimitMap: Map<string, number[]> = new Map();
+
+// Helper: Check rate limit for IP (sliding window algorithm)
+function checkRateLimit(ip: string): { allowed: boolean; remaining: number; resetMs: number } {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+
+  // Get existing timestamps for this IP
+  let timestamps = rateLimitMap.get(ip) || [];
+
+  // Remove expired timestamps (outside window)
+  timestamps = timestamps.filter(ts => ts > windowStart);
+
+  // Check if under limit
+  const allowed = timestamps.length < RATE_LIMIT_REQUESTS;
+
+  if (allowed) {
+    // Add current timestamp
+    timestamps.push(now);
+    rateLimitMap.set(ip, timestamps);
+  }
+
+  // Calculate reset time (when oldest timestamp expires)
+  const resetMs = timestamps.length > 0
+    ? Math.max(0, timestamps[0] + RATE_LIMIT_WINDOW_MS - now)
+    : 0;
+
+  // Periodic cleanup: remove IPs with no recent requests (every ~100 checks)
+  if (Math.random() < 0.01) {
+    for (const [key, ts] of rateLimitMap.entries()) {
+      if (ts.every(t => t <= windowStart)) {
+        rateLimitMap.delete(key);
+      }
+    }
+  }
+
+  return {
+    allowed,
+    remaining: Math.max(0, RATE_LIMIT_REQUESTS - timestamps.length),
+    resetMs
+  };
+}
+
 // Cached auth header (computed once per isolate lifecycle)
 let cachedAuth: string | null = null;
 let cachedAuthKey: string | null = null;
@@ -709,6 +755,7 @@ const JSON_HEADERS = {
 const OK_RESPONSE = JSON.stringify({ ok: true });
 const METHOD_NOT_ALLOWED = JSON.stringify({ error: 'Method not allowed' });
 const UNAUTHORIZED = JSON.stringify({ error: 'Unauthorized' });
+const RATE_LIMITED = JSON.stringify({ error: 'Too many requests' });
 const INTERNAL_ERROR = JSON.stringify({ error: 'Internal server error' });
 
 // Main handler with performance instrumentation and optional authentication
@@ -723,6 +770,23 @@ export default {
 
     if (request.method !== 'POST') {
       return new Response(METHOD_NOT_ALLOWED, { status: 405, headers: JSON_HEADERS });
+    }
+
+    // Rate limiting (100 requests/minute per IP)
+    const clientIp = request.headers.get('cf-connecting-ip') || 'unknown';
+    const rateLimit = checkRateLimit(clientIp);
+    if (!rateLimit.allowed) {
+      console.warn(`Rate limit exceeded for IP: ${clientIp}`);
+      return new Response(RATE_LIMITED, {
+        status: 429,
+        headers: {
+          ...JSON_HEADERS,
+          'Retry-After': String(Math.ceil(rateLimit.resetMs / 1000)),
+          'X-RateLimit-Limit': String(RATE_LIMIT_REQUESTS),
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': String(Math.ceil((Date.now() + rateLimit.resetMs) / 1000))
+        }
+      });
     }
 
     try {

@@ -19,6 +19,7 @@ Alexis is a multilingual VAPI voice agent for armenius.cy PrestaShop e-commerce 
 │              Cloudflare Worker (src/index.ts)                │
 │  - Webhook handler for 5 VAPI tools                         │
 │  - 5s timeout on all API calls (AbortController)            │
+│  - Rate limiting (100 req/min per IP, sliding window)       │
 │  - Carrier name caching (1hr TTL, in-memory Map)            │
 │  - TTS-friendly text transformations                        │
 └────────────────────────┬────────────────────────────────────┘
@@ -113,6 +114,12 @@ npx wrangler secret put VAPI_WEBHOOK_SECRET   # From VAPI dashboard → Server U
 **Listing Optimization (`shortenForListing`):** Truncates product names for voice listings - keeps brand + model, drops specs.
 
 **Carrier Caching:** In-memory Map with 1hr TTL persists across requests in the same Worker isolate. Refreshes all carriers in a single call.
+
+**Rate Limiting:** Sliding window algorithm (100 requests/minute per IP):
+- Uses `cf-connecting-ip` header for client identification
+- Returns 429 with `Retry-After`, `X-RateLimit-*` headers when exceeded
+- Per-isolate tracking (not shared across Workers)
+- Location: `src/index.ts:100-144` (checkRateLimit function)
 
 **Response Format:** VAPI expects tool results in this structure:
 ```json
