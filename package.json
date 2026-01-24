@@ -1,23 +1,21 @@
 {
   "name": "alexis-voice-agent",
-  "version": "1.0.0",
-  "description": "VAPI voice agent for armenius.cy PrestaShop customer support",
+  "version": "2.0.0",
+  "description": "Multilingual Retell AI voice agent for armenius.cy PrestaShop",
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "deploy:vapi": "node scripts/deploy-vapi.js",
+    "deploy:retell": "node scripts/deploy-retell.js",
     "test": "node scripts/test-webhook.js",
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "secret": "wrangler secret put PRESTASHOP_API_KEY",
-    "debug": "node scripts/debug-vapi.js",
-    "debug:call": "node scripts/debug-vapi.js --call",
     "debug:telnyx": "node scripts/debug-telnyx.js",
     "debug:latency": "node scripts/test-latency.js"
   },
   "keywords": [
-    "vapi",
+    "retell",
     "voice-agent",
     "prestashop",
     "customer-support",

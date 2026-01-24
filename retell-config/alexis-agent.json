@@ -1,0 +1,49 @@
+{
+  "agent_name": "Alexis - Armenius.cy Support",
+  "response_engine": {
+    "type": "retell-llm",
+    "llm_id": "${LLM_ID}"
+  },
+  "voice_id": "custom_voice_61664f889f1e0c32642f753577",
+  "language": "el-GR",
+  "voice_temperature": 0.8,
+  "voice_speed": 1.0,
+  "responsiveness": 0.9,
+  "interruption_sensitivity": 0.8,
+  "enable_backchannel": true,
+  "backchannel_frequency": 0.5,
+  "backchannel_words": ["uh-huh", "I see", "got it", "okay"],
+  "reminder_trigger_ms": 10000,
+  "reminder_max_count": 2,
+  "end_call_after_silence_ms": 30000,
+  "max_call_duration_ms": 600000,
+  "post_call_analysis_data": [
+    {
+      "name": "call_summary",
+      "type": "string",
+      "description": "Brief summary of what the customer needed"
+    },
+    {
+      "name": "language_used",
+      "type": "enum",
+      "description": "Primary language of the call",
+      "choices": ["english", "greek", "russian", "mixed"]
+    },
+    {
+      "name": "issue_resolved",
+      "type": "boolean",
+      "description": "Whether the customer's issue was resolved"
+    },
+    {
+      "name": "tools_used",
+      "type": "string",
+      "description": "List of tools that were called during the conversation"
+    }
+  ],
+  "webhook_url": "${WEBHOOK_URL}",
+  "metadata": {
+    "store": "armenius.cy",
+    "languages": ["el", "ru", "en"],
+    "version": "1.0.0"
+  }
+}

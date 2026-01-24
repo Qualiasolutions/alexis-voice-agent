@@ -4,20 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Alexis is a multilingual VAPI voice agent for armenius.cy PrestaShop e-commerce support. It handles customer inquiries about orders, product stock, tracking, and support tickets in Greek, Russian, and English.
+Alexis is a multilingual Retell AI voice agent for armenius.cy PrestaShop e-commerce support. It handles customer inquiries about orders, product stock, tracking, and support tickets in Greek (primary), Russian, and English.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    VAPI Voice Platform                       │
-│  Gladia Solaria (STT) → GPT-4o (LLM) → 11labs (TTS)         │
+│                    Retell AI Platform                        │
+│  Deepgram Nova-3 (STT) → GPT-4o (LLM) → Theos Voice (TTS)   │
 └────────────────────────┬────────────────────────────────────┘
-                         │ Tool calls
+                         │ Tool calls via webhook
                          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Cloudflare Worker (src/index.ts)                │
-│  - Webhook handler for 5 VAPI tools                         │
+│  - Path-based routing: /retell/{toolName}                   │
+│  - 5 custom tools for PrestaShop integration                │
 │  - 5s timeout on all API calls (AbortController)            │
 │  - Rate limiting (100 req/min per IP, sliding window)       │
 │  - Carrier name caching (1hr TTL, in-memory Map)            │
@@ -27,7 +28,7 @@ Alexis is a multilingual VAPI voice agent for armenius.cy PrestaShop e-commerce 
                          ▼
               ┌─────────────────────────┐
               │  armenius.cy/api        │
-              │  (All PrestaShop API)   │
+              │  (PrestaShop REST API)  │
               └─────────────────────────┘
 ```
 
@@ -45,42 +46,39 @@ npm run dev                    # wrangler dev → localhost:8787
 # Deploy webhook to Cloudflare
 npm run deploy                 # wrangler deploy
 
+# Deploy Retell LLM and Agent (saves .retell-deployment.json)
+RETELL_API_KEY=xxx WEBHOOK_URL=https://alexis-webhook.workers.dev npm run deploy:retell
+
 # Set PrestaShop API key as secret
 npm run secret                 # wrangler secret put PRESTASHOP_API_KEY
 
-# Deploy VAPI assistant and tools (saves .vapi-deployment.json)
-VAPI_TOKEN=xxx WEBHOOK_URL=https://alexis-webhook.workers.dev npm run deploy:vapi
-
-# Test webhook (requires VAPI_WEBHOOK_SECRET for signed requests)
-VAPI_WEBHOOK_SECRET=xxx npm run test
+# Test webhook endpoints
+npm run test
 
 # Run unit tests
 npm run test:unit
 ```
 
-## VAPI Tools
+## Retell Tools
 
-The assistant exposes 5 tools to VAPI (defined in `vapi-config/tools.json`):
+The agent exposes 5 tools via path-based routing (defined in `retell-config/alexis-llm.json`):
 
-| Tool | Purpose |
-|------|---------|
-| `getOrderStatus` | Lookup by reference (9-char) or email |
-| `checkProductStock` | Query stock via main shop |
-| `getTrackingInfo` | Get carrier/tracking number |
-| `searchProducts` | Search products by name/ID |
-| `createSupportTicket` | Create PrestaShop message (XML POST) |
+| Tool | Endpoint | Purpose |
+|------|----------|---------|
+| `getOrderStatus` | `/retell/getOrderStatus` | Lookup by reference (9-char) or email |
+| `checkProductStock` | `/retell/checkProductStock` | Query stock via main shop |
+| `getTrackingInfo` | `/retell/getTrackingInfo` | Get carrier/tracking number |
+| `searchProducts` | `/retell/searchProducts` | Multi-strategy search with fallbacks |
+| `createSupportTicket` | `/retell/createSupportTicket` | Create PrestaShop message (XML POST) |
 
 ## PrestaShop API Notes
 
 - All queries use main shop endpoint (`PRESTASHOP_URL`)
-- Order states map from numeric IDs (see `ORDER_STATES` in index.ts:21-41)
+- Order states map from numeric IDs (see `ORDER_STATES` in index.ts)
 - Product names are multilingual arrays - extract `id=1` for English
 - Support tickets require XML POST with CDATA wrapping (not JSON)
-- **Product search**: Use `/search?language=1&query=term` endpoint (NOT filter queries on name field - multilingual fields don't support LIKE filters)
+- **Product search**: Uses multi-strategy search with query normalization
 - **Stock queries**: Use `filter[id_product]=[ID]&filter[id_product_attribute]=[0]` with bracket syntax
-- **Filter syntax** (per [PrestaShop docs](https://devdocs.prestashop-project.org/9/webservice/cheat-sheet/)):
-  - Exact match: `filter[field]=value` or `filter[field]=[value]` (bracket syntax for some endpoints)
-  - Interval/OR: `filter[field]=[1|5]` or `filter[field]=[1,10]`
 - Use `display=[field1,field2]` to minimize response size (avoid `display=full`)
 
 ## Environment Variables
@@ -89,112 +87,86 @@ The assistant exposes 5 tools to VAPI (defined in `vapi-config/tools.json`):
 |----------|-----------|---------|
 | `PRESTASHOP_API_KEY` | Cloudflare secret | API authentication (Basic auth, key as username) |
 | `PRESTASHOP_URL` | wrangler.toml | Main shop API (armenius.cy) |
-| `VAPI_WEBHOOK_SECRET` | Cloudflare secret | Optional - HMAC-SHA256 signature verification |
-| `VAPI_TOKEN` | Local env | For deploy:vapi script only |
-| `WEBHOOK_URL` | Local env | For deploy:vapi and test scripts |
+| `RETELL_API_KEY` | Local env / secret | For deploy:retell script and signature verification |
+| `WEBHOOK_URL` | Local env | For deploy:retell script |
 
 **Setting secrets:**
 ```bash
 npx wrangler secret put PRESTASHOP_API_KEY    # PrestaShop API key
-npx wrangler secret put VAPI_WEBHOOK_SECRET   # From VAPI dashboard → Server URL secret
+npx wrangler secret put RETELL_API_KEY        # From Retell dashboard
 ```
 
 ## Key Implementation Details
 
 **File locations:**
-- Tool handlers: `src/index.ts:144-419` (getOrderStatus, checkProductStock, getTrackingInfo, searchProducts, createSupportTicket)
-- Order states mapping: `src/index.ts:21-41`
-- TTS helpers: `src/index.ts:96-142` (makeSpeechFriendly, shortenForListing)
+- Tool handlers: `src/index.ts:461-1003` (getOrderStatus, checkProductStock, getTrackingInfo, searchProducts, createSupportTicket)
+- Order states mapping: `src/index.ts:68-88`
+- TTS helpers: `src/index.ts:400-443` (makeSpeechFriendly, shortenForListing)
+- Retell config: `retell-config/alexis-llm.json`, `retell-config/alexis-agent.json`
 
 **TTS Optimization (`makeSpeechFriendly`):** Transforms product names for natural speech:
 - "16GB" → "16 gigabytes"
 - "DDR4" → "D D R 4"
 - "i5-1145G7" → "i5 1145 G 7"
 
-**Listing Optimization (`shortenForListing`):** Truncates product names for voice listings - keeps brand + model, drops specs.
-
-**Carrier Caching:** In-memory Map with 1hr TTL persists across requests in the same Worker isolate. Refreshes all carriers in a single call.
+**Multi-Strategy Product Search (`searchProducts`):** Handles fuzzy user queries with fallbacks:
+- Query normalization: removes stop words, extracts significant terms
+- GPU series expansion: "rtx 50 series" → searches for RTX 5060, 5070, 5080, 5090
+- Memory/storage variations: "16gb" → tries "16GB", "16 GB"
+- Brand preservation: recognizes 30+ tech brands (nvidia, asus, corsair, etc.)
+- Parallel search: tries up to 6 search variations in parallel batches
 
 **Rate Limiting:** Sliding window algorithm (100 requests/minute per IP):
 - Uses `cf-connecting-ip` header for client identification
 - Returns 429 with `Retry-After`, `X-RateLimit-*` headers when exceeded
-- Per-isolate tracking (not shared across Workers)
-- Location: `src/index.ts:100-144` (checkRateLimit function)
 
-**Response Format:** VAPI expects tool results in this structure:
+**Response Format:** Retell expects tool results as plain JSON (not wrapped):
 ```json
 {
-  "results": [{
-    "toolCallId": "call-id",
-    "result": "{\"success\": true, ...}"
-  }]
+  "success": true,
+  "products": [...],
+  "note": "..."
 }
 ```
 
-Non-tool-call webhook events should return `{ "ok": true }` immediately.
+## Retell Configuration
 
-**VAPI deployment state:** `npm run deploy:vapi` saves assistant/tool IDs to `.vapi-deployment.json` for subsequent updates.
+**Agent:** `agent_b1ac0f8e5864bbff51b79409fc`
+**LLM:** `llm_d4567a4cdb3c0555df0cd5ccb357`
+**Phone:** `+35722056178` (Cyprus, via Telnyx SIP)
 
-## Debugging & Diagnostics
+**Voice Stack:**
+- STT: Deepgram Nova-3
+- LLM: GPT-4o (temperature 0.7)
+- TTS: Custom voice (Theos - `custom_voice_61664f889f1e0c32642f753577`)
+- Primary language: Greek (el-GR)
+
+**Deployment state:** `npm run deploy:retell` saves LLM/agent IDs to `.retell-deployment.json` for subsequent updates.
+
+## Debugging
 
 ```bash
-# Full VAPI diagnostics (assistants, phones, calls, recommendations)
-VAPI_TOKEN=xxx npm run debug
-
-# Analyze a specific call for latency/errors
-VAPI_TOKEN=xxx npm run debug:call <call-id>
-
-# Telnyx phone number diagnostics
-VAPI_TOKEN=xxx npm run debug:telnyx
-VAPI_TOKEN=xxx TELNYX_API_KEY=xxx npm run debug:telnyx  # Full mode
-
 # Test webhook latency (run wrangler dev first)
 WEBHOOK_URL=http://localhost:8787 npm run debug:latency
+
+# Telnyx phone number diagnostics
+TELNYX_API_KEY=xxx npm run debug:telnyx
+
+# View Cloudflare Worker logs
+npx wrangler tail alexis-webhook
 ```
-
-### Voice Stack Configuration
-
-```json
-{
-  "transcriber": {
-    "provider": "gladia",
-    "model": "solaria-1",
-    "languageBehaviour": "automatic multiple languages",
-    "languages": ["el", "en", "ru"],
-    "confidenceThreshold": 0.2
-  },
-  "model": {
-    "provider": "openai",
-    "model": "chatgpt-4o-latest",
-    "temperature": 0.7,
-    "maxTokens": 250
-  },
-  "voice": {
-    "provider": "11labs",
-    "voiceId": "pNInz6obpgDQGcFmaJgB",
-    "model": "eleven_turbo_v2_5"
-  }
-}
-```
-
-**Why this stack:**
-- **Gladia Solaria**: Only STT with Greek + Russian + English code-switching (Deepgram `multi` mode lacks Greek)
-- **GPT-4o**: Fast, multilingual, excellent for e-commerce conversations
-- **11labs turbo_v2_5**: Fast male voice (Adam), supports multilingual output
 
 ### Latency Budget (target < 700ms total)
 | Component | Target | Notes |
 |-----------|--------|-------|
-| Transcription (Gladia Solaria) | ~270ms | Best for Greek multilingual |
+| Transcription (Deepgram) | ~150ms | Fast multilingual |
 | Webhook (PrestaShop API) | < 200ms | Cached carriers help |
 | LLM (GPT-4o) | ~200ms | Short prompts faster |
-| TTS (11labs turbo) | ~100ms | Streaming helps |
-| Network overhead | ~50-100ms | Varies by region |
+| TTS (custom voice) | ~100ms | Streaming helps |
 | **Total** | ~550-650ms | Within budget |
 
 ### Common Issues
 - **High cold start**: Normal for serverless, ~50-200ms on Cloudflare
 - **Slow PrestaShop**: Use `display=[fields]` not `display=full`
-- **Telnyx no audio**: Re-import phone number in VAPI dashboard, check SIP in Telnyx portal
-- **No tools attached**: Run `npm run deploy:vapi` to attach tools to assistant
-- **Wrong language detected**: Gladia handles Greek/Russian/English automatically
+- **Phone not answering**: Check Telnyx FQDN connection points to `sip.retellai.com`
+- **Wrong language**: Agent language set to `el-GR` (Greek primary)

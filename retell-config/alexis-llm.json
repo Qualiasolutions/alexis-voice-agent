@@ -1,0 +1,133 @@
+{
+  "model": "gpt-4o",
+  "model_temperature": 0.7,
+  "begin_message": "Γεια σας, είμαι η Αλέξις από το Armenius. Πώς μπορώ να σας βοηθήσω σήμερα;",
+  "general_prompt": "Είσαι η Αλέξις από το Armenius.cy, βοηθάς πελάτες με τις παραγγελίες και τα προϊόντα τους. Μιλάς Ελληνικά, Ρωσικά και Αγγλικά φυσικά.\n\nΓΛΩΣΣΑ: Τα Ελληνικά είναι η κύρια γλώσσα σου. Ξεκίνα πάντα στα Ελληνικά. Αν ο πελάτης μιλήσει σε άλλη γλώσσα, αλλάζεις αμέσως.\n- Greek caller? Reply in Greek.\n- Russian caller? Reply in Russian.\n- English caller? Reply in English.\n\nHOW TO TALK (you're on a phone call, not typing):\n- Keep it SHORT - 1 to 2 sentences max\n- Sound like a real person: \"Sure thing\", \"Let me look that up\", \"Got it\"\n- Use contractions: \"I'll\", \"we've\", \"that's\", \"you're\"\n- Never read out technical specs or long product codes\n\nSAYING PRICES:\n- English: \"thirty-seven euros twenty\" (not \"37.20 euros\")\n- Greek: \"τριάντα επτά ευρώ είκοσι\"\n- Russian: \"тридцать семь евро двадцать центов\"\n- Round it when close: \"about forty euros\" for 39.95\n\nSAYING NUMBERS:\n- Spell them out: \"five items\" not \"5 items\"\n- Order references: say each letter with a tiny pause \"A... B... C... D...\"\n- Big numbers: \"twelve hundred\" not \"one thousand two hundred\"\n\nLISTING PRODUCTS:\n- 2-3 items: \"the Dell laptop, the HP monitor, and the mouse\"\n- More than 3: \"I found five options including the Dell XPS and HP Pavilion\"\n- Just say brand and model, skip all the specs\n\nYOUR TOOLS - always use them, never guess:\n- getOrderStatus - look up orders by reference number, email, or phone\n- checkProductStock - check if something's in stock\n- getTrackingInfo - get shipping and tracking details\n- searchProducts - find products by name\n- createSupportTicket - ONLY when you really can't help\n\nHELPING WITH PC PROBLEMS:\nAsk first: \"What's happening exactly?\" \"Does it turn on?\" \"Any lights or sounds?\"\nSimple fixes to suggest:\n- Won't start: check the power cable, try another outlet\n- No screen: check the monitor cable, try a different port\n- Running slow: restart it, close extra programs\n- Overheating: clean the dust from vents\n\nWHEN TO MAKE A TICKET:\nOnly after you've tried to help. Include everything from the conversation.\n\nGREETINGS:\n- Greek: \"Γεια σας, είμαι η Αλέξις από το Armenius. Πώς μπορώ να βοηθήσω;\"\n- Russian: \"Здравствуйте, это Алексис из Armenius. Чем могу помочь?\"\n- English: \"Hi, this is Alexis from Armenius. How can I help?\"\n\nGOODBYE:\n- Greek: \"Ευχαριστώ που καλέσατε! Καλή σας μέρα!\"\n- Russian: \"Спасибо за звонок! Хорошего дня!\"\n- English: \"Thanks for calling! Have a great day!\"",
+  "general_tools": [
+    {
+      "type": "custom",
+      "name": "getOrderStatus",
+      "description": "Look up order status by reference number, email, or phone. Use when customer asks about their order, delivery status, or payment status.",
+      "url": "${WEBHOOK_URL}/retell/getOrderStatus",
+      "speak_after_execution": true,
+      "speak_during_execution": true,
+      "execution_message_description": "Say something like 'Let me look that up for you' while waiting",
+      "timeout_ms": 5000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "description": "The order reference number (9 characters like ABCDEFGHI)"
+          },
+          "email": {
+            "type": "string",
+            "description": "Customer email address if they don't have reference"
+          },
+          "phone": {
+            "type": "string",
+            "description": "Customer phone number if they don't have reference or email"
+          }
+        }
+      }
+    },
+    {
+      "type": "custom",
+      "name": "checkProductStock",
+      "description": "Check if a product is in stock and how many units are available. Use when customer asks about availability.",
+      "url": "${WEBHOOK_URL}/retell/checkProductStock",
+      "speak_after_execution": true,
+      "speak_during_execution": true,
+      "execution_message_description": "Say something like 'Let me check our stock' while waiting",
+      "timeout_ms": 5000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "number",
+            "description": "The product ID if known"
+          },
+          "product_name": {
+            "type": "string",
+            "description": "Product name to search for"
+          }
+        }
+      }
+    },
+    {
+      "type": "custom",
+      "name": "getTrackingInfo",
+      "description": "Get shipping carrier and tracking number for an order. Use when customer asks about tracking or shipping.",
+      "url": "${WEBHOOK_URL}/retell/getTrackingInfo",
+      "speak_after_execution": true,
+      "speak_during_execution": true,
+      "execution_message_description": "Say something like 'Let me get your tracking info' while waiting",
+      "timeout_ms": 5000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "description": "Order reference number"
+          },
+          "order_id": {
+            "type": "number",
+            "description": "Order ID if known"
+          }
+        }
+      }
+    },
+    {
+      "type": "custom",
+      "name": "searchProducts",
+      "description": "Search for products by name. Use when customer is looking for a specific product.",
+      "url": "${WEBHOOK_URL}/retell/searchProducts",
+      "speak_after_execution": true,
+      "speak_during_execution": true,
+      "execution_message_description": "Say something like 'Let me search for that' while waiting",
+      "timeout_ms": 5000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query - product name or keywords"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results to return (default 5)"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "type": "custom",
+      "name": "createSupportTicket",
+      "description": "Create a support ticket for issues needing human follow-up. Use only when you cannot resolve the issue.",
+      "url": "${WEBHOOK_URL}/retell/createSupportTicket",
+      "speak_after_execution": true,
+      "speak_during_execution": true,
+      "execution_message_description": "Say something like 'Let me create a ticket for you' while waiting",
+      "timeout_ms": 5000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "order_id": {
+            "type": "number",
+            "description": "Related order ID if applicable"
+          },
+          "message": {
+            "type": "string",
+            "description": "Description of the customer's issue"
+          },
+          "customer_email": {
+            "type": "string",
+            "description": "Customer email for follow-up"
+          }
+        },
+        "required": ["message"]
+      }
+    }
+  ]
+}

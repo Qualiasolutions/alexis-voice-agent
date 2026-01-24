@@ -8,7 +8,7 @@ node_modules/
 .mcp.json
 
 # Deployment info (contains IDs)
-.vapi-deployment.json
+.retell-deployment.json
 
 # Vercel
 .vercel/

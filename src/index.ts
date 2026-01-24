@@ -1,7 +1,7 @@
 /**
  * Alexis Voice Agent - Cloudflare Worker
  *
- * VAPI webhook handler for armenius.cy PrestaShop
+ * Retell AI webhook handler for armenius.cy PrestaShop
  * Optimized for ultra-low latency (~2ms cold start)
  *
  * Performance optimizations:
@@ -14,7 +14,7 @@
 export interface Env {
   PRESTASHOP_API_KEY: string;
   PRESTASHOP_URL: string;
-  VAPI_WEBHOOK_SECRET?: string; // Optional: for webhook signature verification
+  RETELL_API_KEY?: string; // Optional: for Retell webhook signature verification
 }
 
 // Voice optimization constants
@@ -97,6 +97,33 @@ let productCache: Map<number, { name: string; price: string; time: number }> = n
 const PRODUCT_CACHE_TTL = 300000; // 5 minutes
 const PRODUCT_CACHE_MAX = 100;
 
+// Search result cache (30s TTL, max 50 queries) - reduces duplicate PrestaShop API calls
+let searchCache: Map<string, { ids: number[]; time: number }> = new Map();
+const SEARCH_CACHE_TTL = 30000; // 30 seconds
+const SEARCH_CACHE_MAX = 50;
+
+// Pre-compiled regex patterns (avoids regex compilation on each call)
+const REGEX_ORDER_REF = /^[A-Z0-9]{9}$/i;
+const REGEX_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REGEX_FILTER_CHARS = /[\[\]|,]/g;
+const REGEX_NUMERIC = /^\d+$/;
+const REGEX_QUOTES = /['"]/g;
+const REGEX_SPECIAL_CHARS = /[^\w\s\-\.]/g;
+const REGEX_WHITESPACE = /\s+/g;
+const REGEX_GPU_SERIES = /\b(rtx|gtx|radeon)\s*(\d{2})\s*(series|line)?\b/i;
+const REGEX_MEM_SPEC = /(\d+)\s*(gb|tb|mb)/i;
+const REGEX_HAS_DIGIT = /\d/;
+const REGEX_PHONE_CLEAN = /[\s\-\(\)\+]/g;
+
+// TTS transformation regexes (pre-compiled for makeSpeechFriendly)
+const REGEX_G_MODEL = /\bG(\d+)\b/g;
+const REGEX_GB = /(\d+)\s*GB\b/gi;
+const REGEX_TB = /(\d+)\s*TB\b/gi;
+const REGEX_MB = /(\d+)\s*MB\b/gi;
+const REGEX_DDR = /\bDDR(\d+)\b/gi;
+const REGEX_PROC_FULL = /\bi(\d+)-(\d+)G(\d+)\b/gi;
+const REGEX_PROC_SHORT = /\bi(\d+)-(\d+)\b/gi;
+
 // Rate limiting (per-isolate, sliding window)
 const RATE_LIMIT_REQUESTS = 100;  // Max requests per window
 const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute window
@@ -166,46 +193,162 @@ export function escapeCdata(text: string): string {
 
 // Helper: Validate order reference format (9 alphanumeric chars)
 export function isValidOrderReference(ref: string): boolean {
-  return /^[A-Z0-9]{9}$/i.test(ref);
+  return REGEX_ORDER_REF.test(ref);
 }
 
 // Helper: Validate email format (basic check)
 export function isValidEmail(email: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  return REGEX_EMAIL.test(email);
 }
 
 // Helper: Sanitize search query (remove PrestaShop filter operators)
 export function sanitizeSearchQuery(query: string): string {
-  return query.replace(/[\[\]|,]/g, '').trim();
+  return query.replace(REGEX_FILTER_CHARS, '').trim();
 }
 
-// Helper: Verify VAPI webhook signature (HMAC-SHA256)
-async function verifyWebhookSignature(
+// Search query normalization for better matching
+// Handles tech product naming conventions, series patterns, and common variations
+interface NormalizedQuery {
+  original: string;
+  terms: string[];           // Individual significant terms
+  variations: string[];      // Alternative search queries to try
+}
+
+// Stop words to remove from search (common words that don't help matching)
+const SEARCH_STOP_WORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+  'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
+  'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+  'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought',
+  'used', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'which',
+  'who', 'whom', 'this', 'that', 'these', 'those', 'am', 'is', 'are',
+  'looking', 'want', 'need', 'find', 'search', 'show', 'get', 'any', 'some',
+  'series', 'line', 'model', 'type', 'kind', 'version', 'gen', 'generation'
+]);
+
+// Tech brand names to preserve in searches
+const TECH_BRANDS = new Set([
+  'nvidia', 'geforce', 'rtx', 'gtx', 'radeon', 'amd', 'intel', 'arc',
+  'asus', 'msi', 'gigabyte', 'evga', 'zotac', 'palit', 'pny', 'sapphire',
+  'corsair', 'kingston', 'crucial', 'samsung', 'seagate', 'western', 'sandisk',
+  'logitech', 'razer', 'steelseries', 'hyperx', 'cooler', 'nzxt', 'thermaltake',
+  'dell', 'hp', 'lenovo', 'acer', 'asus', 'apple', 'microsoft', 'sony',
+  'lg', 'benq', 'viewsonic', 'philips', 'aoc', 'alienware', 'predator'
+]);
+
+
+// Normalize search query for better matching
+export function normalizeSearchQuery(rawQuery: string): NormalizedQuery {
+  const original = rawQuery.trim().toLowerCase();
+  const variations: string[] = [];
+
+  // Remove special characters but preserve numbers and hyphens in model numbers
+  let cleaned = original
+    .replace(REGEX_QUOTES, '')           // Remove quotes
+    .replace(REGEX_SPECIAL_CHARS, ' ')   // Keep alphanumeric, spaces, hyphens, dots
+    .replace(REGEX_WHITESPACE, ' ')      // Normalize whitespace
+    .trim();
+
+  // Extract individual terms (filter stop words, keep brands and specs)
+  const allTerms = cleaned.split(/\s+/);
+  const terms = allTerms.filter(term => {
+    if (term.length < 2) return false;
+    if (SEARCH_STOP_WORDS.has(term)) return false;
+    return true;
+  });
+
+  // Build search variations
+
+  // Variation 1: Original cleaned query
+  if (cleaned) variations.push(cleaned);
+
+  // Variation 2: Just the significant terms joined
+  if (terms.length > 1) {
+    const termQuery = terms.join(' ');
+    if (termQuery !== cleaned) variations.push(termQuery);
+  }
+
+  // Variation 3: Handle GPU series patterns (e.g., "rtx 50 series" → "rtx 5070", "rtx 5080")
+  const gpuSeriesMatch = original.match(REGEX_GPU_SERIES);
+  if (gpuSeriesMatch) {
+    const prefix = gpuSeriesMatch[1].toUpperCase();
+    const seriesNum = gpuSeriesMatch[2];
+    // Generate specific model numbers for the series
+    const suffixes = ['60', '70', '80', '90', '70 ti', '80 super'];
+    for (const suffix of suffixes) {
+      variations.push(`${prefix} ${seriesNum}${suffix}`);
+    }
+  }
+
+  // Variation 4: Handle memory/storage specs (e.g., "16gb ram" → "16gb", "16 gb")
+  const memMatch = original.match(REGEX_MEM_SPEC);
+  if (memMatch) {
+    const size = memMatch[1];
+    const unit = memMatch[2].toUpperCase();
+    // Try with and without space
+    variations.push(`${size}${unit}`);
+    variations.push(`${size} ${unit}`);
+  }
+
+  // Variation 5: Brand + category combinations
+  const foundBrands = terms.filter(t => TECH_BRANDS.has(t));
+  const nonBrandTerms = terms.filter(t => !TECH_BRANDS.has(t) && !SEARCH_STOP_WORDS.has(t));
+
+  if (foundBrands.length > 0 && nonBrandTerms.length > 0) {
+    // Try brand + each significant term
+    for (const brand of foundBrands) {
+      for (const term of nonBrandTerms.slice(0, 2)) {
+        variations.push(`${brand} ${term}`);
+      }
+    }
+  }
+
+  // Variation 6: Individual significant terms (for fallback)
+  // Only add terms that are likely product identifiers (brands, model numbers)
+  for (const term of terms) {
+    if (TECH_BRANDS.has(term) || REGEX_HAS_DIGIT.test(term)) {
+      if (!variations.includes(term)) variations.push(term);
+    }
+  }
+
+  // Deduplicate variations while preserving order
+  const uniqueVariations = [...new Set(variations)];
+
+  return {
+    original,
+    terms,
+    variations: uniqueVariations
+  };
+}
+
+// Helper: Verify Retell webhook signature (HMAC-SHA256)
+async function verifyRetellSignature(
   request: Request,
   body: string,
-  secret: string
+  apiKey: string
 ): Promise<boolean> {
-  const signature = request.headers.get('x-vapi-signature');
+  const signature = request.headers.get('x-retell-signature');
   if (!signature) return false;
 
   try {
     const encoder = new TextEncoder();
     const key = await crypto.subtle.importKey(
       'raw',
-      encoder.encode(secret),
+      encoder.encode(apiKey),
       { name: 'HMAC', hash: 'SHA-256' },
       false,
-      ['verify']
+      ['sign']
     );
 
-    // Convert hex signature to bytes
-    const sigBytes = new Uint8Array(
-      signature.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
-    );
+    // Compute expected signature
+    const expectedSig = await crypto.subtle.sign('HMAC', key, encoder.encode(body));
+    const expectedHex = Array.from(new Uint8Array(expectedSig))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
 
-    return await crypto.subtle.verify('HMAC', key, sigBytes, encoder.encode(body));
+    return signature === expectedHex;
   } catch (error) {
-    console.warn('Webhook signature verification failed:', error);
+    console.warn('Retell webhook signature verification failed:', error);
     return false;
   }
 }
@@ -258,16 +401,16 @@ function extractProductName(nameField: any): string {
 export function makeSpeechFriendly(name: string): string {
   return name
     // Fix model numbers like "G8" → "G 8" (not "grams")
-    .replace(/\bG(\d+)\b/g, 'G $1')
+    .replace(REGEX_G_MODEL, 'G $1')
     // Fix storage/RAM: "16GB" → "16 gigabytes", "256GB" → "256 gigabytes"
-    .replace(/(\d+)\s*GB\b/gi, '$1 gigabytes')
-    .replace(/(\d+)\s*TB\b/gi, '$1 terabytes')
-    .replace(/(\d+)\s*MB\b/gi, '$1 megabytes')
+    .replace(REGEX_GB, '$1 gigabytes')
+    .replace(REGEX_TB, '$1 terabytes')
+    .replace(REGEX_MB, '$1 megabytes')
     // Fix RAM type: "DDR4" → "D D R 4"
-    .replace(/\bDDR(\d+)\b/gi, 'D D R $1')
+    .replace(REGEX_DDR, 'D D R $1')
     // Fix processor names: "i5-1145G7" → "i5 1145 G 7"
-    .replace(/\bi(\d+)-(\d+)G(\d+)\b/gi, 'i$1 $2 G $3')
-    .replace(/\bi(\d+)-(\d+)\b/gi, 'i$1 $2')
+    .replace(REGEX_PROC_FULL, 'i$1 $2 G $3')
+    .replace(REGEX_PROC_SHORT, 'i$1 $2')
     // Fix SSD pronunciation
     .replace(/\bSSD\b/g, 'S S D')
     // Fix common abbreviations
@@ -352,7 +495,7 @@ async function getOrderStatus(env: Env, args: { reference?: string; email?: stri
       order = orders.orders[0];
     } else if (args.phone) {
       // Clean phone number (remove spaces, dashes, parentheses)
-      const cleanPhone = args.phone.replace(/[\s\-\(\)\+]/g, '');
+      const cleanPhone = args.phone.replace(REGEX_PHONE_CLEAN, '');
 
       // Search in addresses table - check both phone and phone_mobile IN PARALLEL
       // This saves ~100-150ms compared to sequential lookups
@@ -602,7 +745,41 @@ function getProductUrl(env: Env, productId: number): string {
   return `${baseUrl}/index.php?id_product=${productId}&controller=product`;
 }
 
-// Tool: Search Products (searches name, reference, and meta fields)
+// Helper: Execute a single PrestaShop search query (with caching)
+async function executeSearch(env: Env, query: string): Promise<number[]> {
+  const sanitized = sanitizeSearchQuery(query);
+  if (!sanitized) return [];
+
+  const cacheKey = sanitized.toLowerCase();
+  const now = Date.now();
+
+  // Check cache first
+  const cached = searchCache.get(cacheKey);
+  if (cached && (now - cached.time) < SEARCH_CACHE_TTL) {
+    return cached.ids;
+  }
+
+  try {
+    const encoded = encodeURIComponent(sanitized);
+    const results = await prestashopFetch(env, `/search?language=1&query=${encoded}`);
+    const ids = results.products?.map((p: any) => p.id) || [];
+
+    // Cache result with FIFO eviction
+    if (searchCache.size >= SEARCH_CACHE_MAX) {
+      const oldestKey = searchCache.keys().next().value;
+      if (oldestKey !== undefined) searchCache.delete(oldestKey);
+    }
+    searchCache.set(cacheKey, { ids, time: now });
+
+    return ids;
+  } catch (error) {
+    console.warn(`Search failed for "${query}":`, error);
+    return [];
+  }
+}
+
+// Tool: Search Products (multi-strategy search with fallbacks)
+// Handles: exact matches, partial matches, series patterns, tech specs
 async function searchProducts(env: Env, args: { query: string; limit?: number }) {
   try {
     const limit = Math.min(args.limit || VOICE_SEARCH_DEFAULT, VOICE_SEARCH_MAX);
@@ -612,8 +789,8 @@ async function searchProducts(env: Env, args: { query: string; limit?: number })
       return { success: false, message: 'Please tell me what product you\'re looking for.' };
     }
 
-    // If query looks like a product ID/SKU (numeric), fetch directly
-    if (/^\d+$/.test(rawQuery)) {
+    // Fast path: If query looks like a product ID/SKU (numeric), fetch directly
+    if (REGEX_NUMERIC.test(rawQuery)) {
       try {
         const product = await prestashopFetch(env, `/products/${rawQuery}?display=[id,name,price]`);
         const p = product.products?.[0] || product.product;
@@ -635,33 +812,120 @@ async function searchProducts(env: Env, args: { query: string; limit?: number })
       }
     }
 
-    // Sanitize query to prevent PrestaShop filter injection
-    const sanitizedQuery = sanitizeSearchQuery(rawQuery);
-    if (!sanitizedQuery) {
+    // Normalize query and generate search variations
+    const normalized = normalizeSearchQuery(rawQuery);
+
+    if (normalized.variations.length === 0) {
       return { success: false, message: 'Please provide a product name to search for.' };
     }
 
-    // Use PrestaShop's /search endpoint (language=1 for English)
-    const encodedQuery = encodeURIComponent(sanitizedQuery);
-    const searchResults = await prestashopFetch(env, `/search?language=1&query=${encodedQuery}`);
+    // Pre-compute brand terms once (used for filtering and fetch limit)
+    const brandTerms = normalized.terms.filter(t => TECH_BRANDS.has(t));
+    const hasBrandTerms = brandTerms.length > 0;
 
-    if (!searchResults.products?.length) {
-      return { success: false, message: `No products found matching "${sanitizedQuery}"` };
+    // Multi-strategy search with early termination
+    // Try first variation alone - if it returns enough results, skip parallel searches
+    const productScores = new Map<number, number>();
+    const firstResult = await executeSearch(env, normalized.variations[0]);
+
+    for (const id of firstResult) {
+      productScores.set(id, 1);
     }
 
-    // Search returns only IDs, fetch product details for top results
-    const productIds = searchResults.products.slice(0, limit).map((p: any) => p.id);
-    const search = await prestashopFetch(env, `/products?filter[id]=[${productIds.join('|')}]&display=[id,name,price]`);
+    // Only do parallel searches if first variation didn't return enough results
+    // This saves 2 API calls in the common case
+    const needMoreResults = productScores.size < (hasBrandTerms ? 10 : 5);
+
+    if (needMoreResults && normalized.variations.length > 1) {
+      const additionalVariations = normalized.variations.slice(1, 4);
+      const additionalResults = await Promise.all(
+        additionalVariations.map(v => executeSearch(env, v))
+      );
+
+      for (const ids of additionalResults) {
+        for (const id of ids) {
+          productScores.set(id, (productScores.get(id) || 0) + 1);
+        }
+      }
+    }
+
+    // Fallback only if still no results
+    if (productScores.size === 0 && normalized.variations.length > 4) {
+      const fallbackVariations = normalized.variations.slice(4, 7);
+      const fallbackResults = await Promise.all(
+        fallbackVariations.map(v => executeSearch(env, v))
+      );
+
+      for (const ids of fallbackResults) {
+        for (const id of ids) {
+          productScores.set(id, (productScores.get(id) || 0) + 1);
+        }
+      }
+    }
+
+    if (productScores.size === 0) {
+      // Provide helpful message with what we searched for
+      const searchedTerms = normalized.terms.slice(0, 3).join(', ');
+      return {
+        success: false,
+        message: `No products found matching "${rawQuery}". I searched for: ${searchedTerms}. Try being more specific with the product name or model number.`
+      };
+    }
+
+    // Sort by score (descending) and take top results
+    // Fetch more candidates if we'll be filtering by brand (to ensure enough results after filtering)
+    const fetchLimit = hasBrandTerms ? Math.max(limit * 3, 15) : limit;
+
+    const sortedIds = [...productScores.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, fetchLimit)
+      .map(([id]) => id);
+
+    // Fetch product details for matched IDs
+    const search = await prestashopFetch(
+      env,
+      `/products?filter[id]=[${sortedIds.join('|')}]&display=[id,name,price]`
+    );
 
     if (!search.products?.length) {
-      return { success: false, message: `No products found matching "${sanitizedQuery}"` };
+      return { success: false, message: `No products found matching "${rawQuery}"` };
+    }
+
+    // Maintain score-based ordering (PrestaShop may return in different order)
+    const productMap = new Map(search.products.map((p: any) => [p.id, p]));
+    let orderedProducts = sortedIds
+      .map(id => productMap.get(id))
+      .filter(Boolean);
+
+    // Post-filter: If user specified a brand, filter to only products where brand is primary
+    // This fixes PrestaShop's OR-based search returning unrelated products
+    // (e.g., "asus laptop" returning cables that are "compatible with Asus")
+    if (hasBrandTerms) {
+      const filteredProducts = orderedProducts.filter((p: any) => {
+        const productName = extractProductName(p.name).toLowerCase();
+        // Brand must appear in the first 50 characters (primary position)
+        // This filters out accessories "for Brand" or "compatible with Brand"
+        const primaryPart = productName.slice(0, 50);
+        return brandTerms.some(brand => primaryPart.includes(brand));
+      });
+
+      // If no products match the brand, tell the user clearly
+      if (filteredProducts.length === 0) {
+        const brandList = brandTerms.join(', ').toUpperCase();
+        return {
+          success: false,
+          message: `No ${brandList} products found matching "${rawQuery}". Try searching without the brand name, or check if we carry ${brandList} products.`
+        };
+      }
+
+      orderedProducts = filteredProducts.slice(0, limit);
     }
 
     // For multiple products: use short names for natural listing
     // For single product: use full TTS-friendly name
-    const isList = search.products.length > 1;
+    const isList = orderedProducts.length > 1;
 
-    const products = search.products.map((p: any) => {
+    const products = orderedProducts.map((p: any) => {
       const fullName = extractProductName(p.name);
       return {
         id: p.id,
@@ -739,48 +1003,58 @@ async function createSupportTicket(env: Env, args: { order_id?: number; message:
 }
 
 // Pre-built responses for fast paths
-// CORS restricted to VAPI API origin for security
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': 'https://api.vapi.ai',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-VAPI-Signature'
+const RETELL_JSON_HEADERS = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*'
 };
 
-const JSON_HEADERS = {
-  'Content-Type': 'application/json',
-  'Access-Control-Allow-Origin': 'https://api.vapi.ai'
+const RETELL_CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Retell-Signature'
 };
 
 // Pre-stringified responses for common cases
-const OK_RESPONSE = JSON.stringify({ ok: true });
 const METHOD_NOT_ALLOWED = JSON.stringify({ error: 'Method not allowed' });
 const UNAUTHORIZED = JSON.stringify({ error: 'Unauthorized' });
 const RATE_LIMITED = JSON.stringify({ error: 'Too many requests' });
 const INTERNAL_ERROR = JSON.stringify({ error: 'Internal server error' });
 
-// Main handler with performance instrumentation and optional authentication
+// Tool name mapping for Retell path-based routing
+const RETELL_TOOLS: Record<string, (env: Env, args: any) => Promise<any>> = {
+  'getOrderStatus': getOrderStatus,
+  'checkProductStock': checkProductStock,
+  'getTrackingInfo': getTrackingInfo,
+  'searchProducts': searchProducts,
+  'createSupportTicket': createSupportTicket
+};
+
+// Main handler - Retell AI webhook
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const startTime = Date.now();
+    const url = new URL(request.url);
+    const path = url.pathname;
 
     // CORS preflight - fastest path
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: CORS_HEADERS });
+      return new Response(null, { headers: RETELL_CORS_HEADERS });
     }
 
     if (request.method !== 'POST') {
-      return new Response(METHOD_NOT_ALLOWED, { status: 405, headers: JSON_HEADERS });
+      return new Response(METHOD_NOT_ALLOWED, { status: 405, headers: RETELL_JSON_HEADERS });
     }
 
     // Rate limiting (100 requests/minute per IP)
     const clientIp = request.headers.get('cf-connecting-ip') || 'unknown';
     const rateLimit = checkRateLimit(clientIp);
+
     if (!rateLimit.allowed) {
       console.warn(`Rate limit exceeded for IP: ${clientIp}`);
       return new Response(RATE_LIMITED, {
         status: 429,
         headers: {
-          ...JSON_HEADERS,
+          ...RETELL_JSON_HEADERS,
           'Retry-After': String(Math.ceil(rateLimit.resetMs / 1000)),
           'X-RateLimit-Limit': String(RATE_LIMIT_REQUESTS),
           'X-RateLimit-Remaining': '0',
@@ -790,73 +1064,50 @@ export default {
     }
 
     try {
-      // Read body for both auth verification and processing
       const bodyText = await request.text();
 
-      // Webhook authentication (optional - enable by setting VAPI_WEBHOOK_SECRET)
-      if (env.VAPI_WEBHOOK_SECRET) {
-        const isValid = await verifyWebhookSignature(request, bodyText, env.VAPI_WEBHOOK_SECRET);
+      // Extract tool name from path: /retell/getOrderStatus -> getOrderStatus
+      // Also support direct /toolName for simpler URLs
+      let toolName = path.startsWith('/retell/')
+        ? path.replace('/retell/', '')
+        : path.replace('/', '');
+
+      const handler = RETELL_TOOLS[toolName];
+
+      if (!handler) {
+        return new Response(JSON.stringify({ error: `Unknown tool: ${toolName}` }), {
+          status: 404,
+          headers: RETELL_JSON_HEADERS
+        });
+      }
+
+      // Optional Retell signature verification
+      if (env.RETELL_API_KEY) {
+        const isValid = await verifyRetellSignature(request, bodyText, env.RETELL_API_KEY);
         if (!isValid) {
-          console.warn('Webhook signature verification failed');
-          return new Response(UNAUTHORIZED, { status: 401, headers: JSON_HEADERS });
+          console.warn('Retell signature verification failed');
+          return new Response(UNAUTHORIZED, { status: 401, headers: RETELL_JSON_HEADERS });
         }
       }
 
-      const body = JSON.parse(bodyText);
+      // Retell sends params directly at root level
+      const args = JSON.parse(bodyText);
 
-      // VAPI sends: { message: { type: "tool-calls", toolCallList: [{ id, type, function: { name, arguments } }] } }
-      const toolCall = body.message?.toolCallList?.[0];
+      // Execute tool
+      const result = await handler(env, args);
 
-      // If no tool call, acknowledge the event and return fast
-      if (!toolCall?.function?.name) {
-        return new Response(OK_RESPONSE, { status: 200, headers: JSON_HEADERS });
-      }
-
-      const functionName = toolCall.function.name;
-      const args = toolCall.function.arguments || {};
-
-      let result: { success?: boolean; error?: string; message?: string; [key: string]: unknown };
-
-      switch (functionName) {
-        case 'getOrderStatus':
-          result = await getOrderStatus(env, args);
-          break;
-        case 'checkProductStock':
-          result = await checkProductStock(env, args);
-          break;
-        case 'getTrackingInfo':
-          result = await getTrackingInfo(env, args);
-          break;
-        case 'searchProducts':
-          result = await searchProducts(env, args);
-          break;
-        case 'createSupportTicket':
-          result = await createSupportTicket(env, args);
-          break;
-        default:
-          result = { error: `Unknown function: ${functionName}` };
-      }
-
-      // Log performance metrics with correlation ID for tracing
+      // Log performance
       const duration = Date.now() - startTime;
-      const toolCallId = toolCall.id || 'unknown';
       if (duration > 500) {
-        console.warn(`[${toolCallId}] Slow tool call: ${functionName} took ${duration}ms`);
+        console.warn(`[retell] Slow tool call: ${toolName} took ${duration}ms`);
       }
 
-      // Build response with pre-stringified result
-      const responseBody = JSON.stringify({
-        results: [{
-          toolCallId: toolCall.id,
-          result: JSON.stringify(result)
-        }]
-      });
-
-      return new Response(responseBody, { headers: JSON_HEADERS });
+      // Retell expects simple JSON response (not wrapped)
+      return new Response(JSON.stringify(result), { headers: RETELL_JSON_HEADERS });
 
     } catch (error) {
       console.error('Webhook error:', error);
-      return new Response(INTERNAL_ERROR, { status: 500, headers: JSON_HEADERS });
+      return new Response(INTERNAL_ERROR, { status: 500, headers: RETELL_JSON_HEADERS });
     }
   }
 };
